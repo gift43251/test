@@ -135,7 +135,7 @@ def init_db():
                      (username TEXT PRIMARY KEY, tags TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS push_settings
                      (id INTEGER PRIMARY KEY, line_token TEXT, keywords TEXT)''')
-        # ✅ 加速查詢索引
+        # 加速查詢索引
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
@@ -144,7 +144,6 @@ def init_db():
 # --- 4. 新聞抓取（並發 + 批次翻譯） ---
 
 def _detect_country(t_lower, z_lower):
-    """從標題文字中辨識國家/地區，回傳 (country, lat, lon)"""
     if "美國" in z_lower or "川普" in z_lower or "白宮" in z_lower or re.search(r'\btrump\b|\bamerica\b|\bwashington\b|\bwhite\s+house\b|\busa\b', t_lower):
         target = "美國"
     elif "台灣" in z_lower or "台積電" in z_lower or re.search(r'\btaiwan\b', t_lower):
@@ -174,7 +173,6 @@ def _detect_country(t_lower, z_lower):
 
 
 def _fetch_source_raw(src):
-    """爬取單一來源，回傳原始條目 list（不做翻譯）"""
     results = []
     try:
         feed = feedparser.parse(
@@ -195,7 +193,6 @@ def _fetch_source_raw(src):
 
 
 def _translate_batch(titles_en, translator, batch_size=8):
-    """批次翻譯英文標題，用 ||| 分隔合併後一次送出"""
     translations = {}
     groups = [titles_en[i:i+batch_size] for i in range(0, len(titles_en), batch_size)]
     for group in groups:
@@ -212,8 +209,7 @@ def _translate_batch(titles_en, translator, batch_size=8):
 
 
 def fetch_all_news():
-    """並發爬取所有來源 → 批次翻譯 → 批次寫入 DB"""
-    # Step 1: 並發爬取（5 個來源同時跑）
+    # Step 1: 並發爬取
     all_raw = []
     with ThreadPoolExecutor(max_workers=len(NEWS_SOURCES)) as executor:
         futures = [executor.submit(_fetch_source_raw, src) for src in NEWS_SOURCES]
@@ -233,7 +229,7 @@ def fetch_all_news():
     if not new_entries:
         return
 
-    # Step 3: 分流中英文，批次翻譯英文標題
+    # Step 3: 分流中英文，批次翻譯
     translator = GoogleTranslator(source='auto', target='zh-TW')
     to_translate = []
     chinese_ready = []
@@ -245,7 +241,6 @@ def fetch_all_news():
         else:
             to_translate.append((title_raw, link_raw, source_name))
 
-    # 批次翻譯
     translation_map = {}
     if to_translate:
         translation_map = _translate_batch([t[0] for t in to_translate], translator)
@@ -276,7 +271,7 @@ def fetch_all_news():
         conn.commit()
 
 
-# --- 5. 背景排程（APScheduler，單例保證不重複啟動） ---
+# --- 5. 背景排程 ---
 @st.cache_resource
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone="Asia/Taipei")
@@ -285,7 +280,7 @@ def start_scheduler():
     scheduler.start()
     return scheduler
 
-# --- 6. 資料庫查詢函數（加快取，頁面切換不重查） ---
+# --- 6. 資料庫查詢函數 ---
 @st.cache_data(ttl=60)
 def query_all_data():
     with get_db_connection() as conn:
@@ -334,7 +329,7 @@ init_db()
 if 'monitor_started' not in st.session_state:
     with st.spinner("智慧監控中心初始化，正在跨國同步最新全球焦點..."):
         fetch_all_news()
-    start_scheduler()  # ✅ 啟動 APScheduler 背景排程
+    start_scheduler()
     st.session_state['monitor_started'] = True
 
 # --- 8. Session State 初始化 ---
@@ -384,7 +379,6 @@ st.sidebar.title(f"👤 {st.session_state['username']}")
 if st.sidebar.button("🔄 手動同步最新新聞", key="side_sync_btn"):
     with st.spinner("正在重新爬取各國新聞..."):
         fetch_all_news()
-    # ✅ 清除快取，確保頁面顯示最新資料
     st.cache_data.clear()
     st.rerun()
 
@@ -422,7 +416,8 @@ def set_view(view_name):
     st.session_state['current_view'] = view_name
 
 st.write("### 🧭 系統主功能面板")
-base_menu = ["🏠 首頁總覽", "⏳ 歷史總時間軸", "📊 數據統計分析", "🔍 關鍵字搜尋"]
+# ✅ 新增影片專區至導覽列
+base_menu = ["🏠 首頁總覽", "🎬 影片專區", "⏳ 歷史總時間軸", "📊 數據統計分析", "🔍 關鍵字搜尋"]
 if not st.session_state['is_guest']:
     base_menu.append("📢 LINE通知設定")
 
@@ -488,7 +483,7 @@ def render_native_news_cards(df_target):
                     with get_db_connection() as conn:
                         conn.execute("UPDATE monitor_logs SET category = ? WHERE id = ?", (new_category, news_id))
                         conn.commit()
-                    st.cache_data.clear()  # ✅ 更新後清快取
+                    st.cache_data.clear()
                     st.session_state['current_view'] = selected_nav
                     st.rerun()
 
@@ -537,13 +532,34 @@ if current == "🏠 首頁總覽":
         st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
         render_native_news_cards(df_recent)
 
-# B. 歷史總時間軸
+# ✅ 新增：B. 影片專區
+elif current == "🎬 影片專區":
+    st.title("🎬 24小時即時新聞影音專區")
+    st.markdown("在這裡掌握全球知名新聞頻道的即時轉播。")
+    
+    v_col1, v_col2 = st.columns(2)
+    with v_col1:
+        st.subheader("🔴 聯合新聞網 24h Live")
+        st.video("https://www.youtube.com/watch?v=wM0g8EoGcA0") 
+    with v_col2:
+        st.subheader("🔴 Sky News Live (國際焦點)")
+        st.video("https://www.youtube.com/watch?v=9Auq9mYxFEE")
+    
+    st.write("---")
+    st.subheader("📺 科技與財經專欄")
+    v_col3, v_col4 = st.columns(2)
+    with v_col3:
+        st.video("https://www.youtube.com/watch?v=86YLFOog4GM") # 彭博 TV
+    with v_col4:
+        st.video("https://www.youtube.com/watch?v=H74S940Z-yU") # 科技頻道範例
+
+# C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
     st.title("⏳ 全球歷史即時總時間軸")
     df_all = query_all_data()
     render_native_news_cards(df_all)
 
-# C. 數據統計分析
+# ✅ 修改：D. 數據統計分析 (加入圓餅圖並優化排版)
 elif current == "📊 數據統計分析":
     st.title("📊 全球新聞數據統計分析")
     df_all = query_all_data()
@@ -551,7 +567,16 @@ elif current == "📊 數據統計分析":
         st.warning("資料庫內暫無數據可供分析。")
     else:
         col_f1, col_f2 = st.columns([1, 1])
+        
         with col_f1:
+            st.write("### 🍩 各類別新聞佔比")
+            category_counts = df_all['category'].value_counts().reset_index()
+            category_counts.columns = ['category', 'count']
+            fig_pie = px.pie(category_counts, names='category', values='count', 
+                             title="各類別發布比例", hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True, key="stat_pie_chart")
+            
+        with col_f2:
             st.write("### 📈 新聞動態抓取走勢線")
             df_trend = df_all.copy()
             df_trend['time_group'] = df_trend['time_dt'].dt.floor('10min').dt.strftime("%Y-%m-%d %H:%M")
@@ -559,12 +584,13 @@ elif current == "📊 數據統計分析":
             time_trend = time_trend.sort_values(by='time_group')
             fig_line = px.line(time_trend, x="time_group", y="新聞數量", color="category", title="趨勢走勢線", markers=True)
             st.plotly_chart(fig_line, use_container_width=True, key="stat_line_chart")
-        with col_f2:
-            st.write("### ⏱️ 24小時新聞發布頻率線")
-            fig_hist = px.histogram(df_all, x="time_dt", color="category", nbins=24, title="24小時發布頻率直方圖")
-            st.plotly_chart(fig_hist, use_container_width=True, key="stat_hist_chart")
+            
+        st.write("---")
+        st.write("### ⏱️ 24小時新聞發布頻率線")
+        fig_hist = px.histogram(df_all, x="time_dt", color="category", nbins=24, title="24小時發布頻率直方圖")
+        st.plotly_chart(fig_hist, use_container_width=True, key="stat_hist_chart")
 
-# D. 關鍵字搜尋
+# E. 關鍵字搜尋
 elif current == "🔍 關鍵字搜尋":
     st.title("🔍 全域新聞關鍵字檢索")
     search_query = st.text_input("輸入要查詢的關鍵字：", placeholder="例如：台積電、晶片、戰爭", key="search_box_input")
@@ -576,7 +602,7 @@ elif current == "🔍 關鍵字搜尋":
     elif search_query:
         st.info("目前尚無符合該關鍵字的新聞。")
 
-# E. LINE通知設定
+# F. LINE通知設定
 elif current == "📢 LINE通知設定":
     st.title("📢 LINE Notify 智慧預警推送")
     with get_db_connection() as conn:
@@ -596,7 +622,7 @@ elif current == "📢 LINE通知設定":
                 conn.commit()
             st.success("通知設定更新成功！")
 
-# F. 動態分類專屬時間軸
+# G. 動態分類專屬時間軸
 elif current.startswith("🔖 "):
     target_tag = current.replace("🔖 ", "")
     st.title(f"🔖 分類專屬獨立時間軸：{target_tag}")
