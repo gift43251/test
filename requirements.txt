@@ -1,3 +1,11 @@
-streamlit
-pandas
 feedparser
+deep-translator
+streamlit
+requests
+textblob
+streamlit-cookies-controller
+transformers
+torch
+geopy
+streamlit-folium
+apscheduler
