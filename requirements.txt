@@ -9,3 +9,4 @@ torch
 geopy
 streamlit-folium
 apscheduler
+plotly
