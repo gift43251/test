@@ -135,16 +135,20 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS user_tags
                      (username TEXT PRIMARY KEY, tags TEXT)''')
         
-        # 已升級：新增 user_id 欄位以支援 LINE Messaging API
         c.execute('''CREATE TABLE IF NOT EXISTS push_settings
                      (id INTEGER PRIMARY KEY, line_token TEXT, user_id TEXT, keywords TEXT)''')
+        
+        # 【新增此段補丁】強制幫舊的資料表追加 user_id 欄位，防止舊資料庫報錯
+        try:
+            c.execute("ALTER TABLE push_settings ADD COLUMN user_id TEXT;")
+        except sqlite3.OperationalError:
+            pass  # 如果欄位以前就已經加過了，就直接忽略，不會卡住
         
         # 加速查詢索引
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
         conn.commit()
-
 # --- 4. 新聞抓取與 LINE 推播 ---
 def send_line_push(channel_access_token, user_id, message_text):
     """透過 LINE Messaging API 發送主動推播訊息"""
