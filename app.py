@@ -584,7 +584,7 @@ if current == "🏠 首頁總覽":
 # B. 影片專區
 elif current == "🎬 影片專區":
     st.title("🎬 24小時即時新聞影音專區")
-    st.markdown("在這裡掌握全球知名新聞頻道的即時轉播。")
+    st.markdown("在這裡掌握全球知名新聞頻道的即時转播。")
     
     v_col1, v_col2 = st.columns(2)
     with v_col1:
@@ -608,8 +608,8 @@ elif current == "🎬 影片專區":
     with col4:
         # 這裡可以保留之前的財經專欄，或是放另一個國際科技影片
         st.markdown("### ● 科技商業解密 (ColdFusion)")
-        st.video("https://www.youtube.com/watch?v=vVkaZ_XG0A8")U")
-
+        st.video("https://www.youtube.com/watch?v=vVkaZ_XG0A8")
+        
 # C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
     st.title("⏳ 全球歷史即時總時間軸")
