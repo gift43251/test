@@ -584,31 +584,45 @@ if current == "🏠 首頁總覽":
 # B. 影片專區
 elif current == "🎬 影片專區":
     st.title("🎬 24小時即時新聞影音專區")
-    st.markdown("在這裡掌握全球知名新聞頻道的即時转播。")
+    st.markdown("系統自動偵測並彙整爬蟲抓取到的最新影音與動態新聞。")
     
-    v_col1, v_col2 = st.columns(2)
-    with v_col1:
-        st.subheader("🔴 Sky News 24h Live")
-        st.video("https://www.youtube.com/watch?v=9Auqeyl15I8") 
-    with v_col2:
-        st.subheader("🔴 ABC News (國際焦點)")
-        st.video("https://www.youtube.com/watch?v=w_Ma8oQLmSM")
+    # 從資料庫讀取最新的數據
+    df_news = query_all_data()
     
-    st.write("---")
-    st.subheader("💻 科技與財經專欄")
-    
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        # 這裡改成國際知名的科技專欄
-        st.markdown("### ● 國際科技趨勢 (MKBHD / The Verge)")
-        # 【在這裡修改】換上國際科技影片的網址
-        st.video("https://www.youtube.com/watch?v=8p_UuU080aI")
-    
-    with col4:
-        # 這裡可以保留之前的財經專欄，或是放另一個國際科技影片
-        st.markdown("### ● 科技商業解密 (ColdFusion)")
-        st.video("https://www.youtube.com/watch?v=vVkaZ_XG0A8")
+    if not df_news.empty:
+        # 篩選標題中含有影音關鍵字的新聞（可根據需求自行調整關鍵字）
+        video_keywords = ["影片", "影音", "直播", "live", "video", "視頻", "播報"]
+        df_videos = df_news[df_news['title_zh'].str.lower().str.contains('|'.join(video_keywords), na=False)]
+        
+        if not df_videos.empty:
+            st.subheader(f"📹 最新偵測到的影音新聞 (共 {len(df_videos)} 則)")
+            
+            # 以每行兩格 (2 columns) 的排版動態顯示
+            for i in range(0, len(df_videos), 2):
+                v_col1, v_col2 = st.columns(2)
+                
+                # 第一格
+                with v_col1:
+                    row1 = df_videos.iloc[i]
+                    st.markdown(f"### 🔴 {row1['title_zh']}")
+                    st.caption(f"📡 來源：{row1['source']} | 📅 時間：{row1['time']} | 🏷️ 分類：{row1['category']}")
+                    # 如果欄位本身是可播放的影片網址，可使用 st.video(row1['link'])
+                    # 若是一般新聞連結，則提供超連結按鈕引導使用者觀看
+                    st.link_button("🌐 前往觀看影音新聞", row1['link'], use_container_width=True)
+                
+                # 第二格（檢查是否有下一則新聞，有的話才渲染）
+                if i + 1 < len(df_videos):
+                    with v_col2:
+                        row2 = df_videos.iloc[i+1]
+                        st.markdown(f"### 🔴 {row2['title_zh']}")
+                        st.caption(f"📡 來源：{row2['source']} | 📅 時間：{row2['time']} | 🏷️ 分類：{row2['category']}")
+                        st.link_button("🌐 前往觀看影音新聞", row2['link'], use_container_width=True)
+                
+                st.write("---")
+        else:
+            st.info("ℹ️ 目前資料庫中暫時沒有偵測到包含影音關鍵字的新聞。")
+    else:
+        st.warning("⚠️ 目前資料庫內尚無新聞資料。")
         
 # C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
