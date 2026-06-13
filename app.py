@@ -1,5 +1,6 @@
 import streamlit as st
 import feedparser
+import requests
 from deep_translator import GoogleTranslator
 from textblob import TextBlob
 import sqlite3
@@ -32,7 +33,7 @@ NEWS_SOURCES = [
 DEFAULT_CATEGORIES = {
     "軍事政治": ["military", "war", "russia", "israel", "defense", "election", "ukraine", "conflict", "sanctions", "die", "arrest", "retrial", "airstrike", "biden", "combat", "tactic", "ally", "ceasefire", "invasion", "refugee", "戰爭", "選舉", "軍事", "政治", "衝突", "烏克蘭", "俄羅斯", "以色列"],
     "經濟": ["economy", "inflation", "gdp", "fed", "rate", "finance", "降息", "通膨", "股市", "經濟", "財經"],
-    "科技": ["tech", "semiconductor", "apple", "google", "gpu", "tsmc", "台積電", "晶片", "科技", "人工智慧"],
+    "科技": ["tech", "semiconductor", "apple", "google", "gpu", "tsmc", "spaceX", "nvidia", "台積電", "晶片", "科技", "人工智慧"],
     "體育": ["sport", "nba", "fifa", "olympics", "football", "tennis", "rookie", "mvp", "veteran", "blowout", "comeback", "upside", "momentum", "athletics", "blank", "edge", "運動", "籃球", "奧運", "體育"],
     "民生健康": ["health", "virus", "climate", "food", "medicine", "symptoms", "chronic", "acute", "diagnosis", "side effects", "immunity", "metabolism", "nutrient", "diet", "sedentary", "cancer", "flu", "hypertension", "diabetes", "病毒", "氣候", "醫療", "健康", "民生"]
 }
@@ -58,7 +59,7 @@ CRISIS_STRONG_WORDS = [
     "combat", "drone", "attack", "missile", "hostage", "shot dead", "hijack", "explode", "bomb"
 ]
 
-# --- 2. AI 分類器（延遲載入，避免阻塞啟動） ---
+# --- 2. AI 分類器 ---
 @st.cache_resource(show_spinner=False)
 def load_classifier():
     try:
@@ -133,15 +134,36 @@ def init_db():
                       link TEXT UNIQUE, sentiment REAL, country TEXT, lat REAL, lon REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS user_tags
                      (username TEXT PRIMARY KEY, tags TEXT)''')
+        
+        # 已升級：新增 user_id 欄位以支援 LINE Messaging API
         c.execute('''CREATE TABLE IF NOT EXISTS push_settings
-                     (id INTEGER PRIMARY KEY, line_token TEXT, keywords TEXT)''')
+                     (id INTEGER PRIMARY KEY, line_token TEXT, user_id TEXT, keywords TEXT)''')
+        
         # 加速查詢索引
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
         conn.commit()
 
-# --- 4. 新聞抓取（並發 + 批次翻譯） ---
+# --- 4. 新聞抓取與 LINE 推播 ---
+def send_line_push(channel_access_token, user_id, message_text):
+    """透過 LINE Messaging API 發送主動推播訊息"""
+    if not channel_access_token or not user_id:
+        return None
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {channel_access_token}"
+    }
+    payload = {
+        "to": user_id,
+        "messages": [{"type": "text", "text": message_text}]
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        return response.status_code
+    except Exception:
+        return None
 
 def _detect_country(t_lower, z_lower):
     if "美國" in z_lower or "川普" in z_lower or "白宮" in z_lower or re.search(r'\btrump\b|\bamerica\b|\bwashington\b|\bwhite\s+house\b|\busa\b', t_lower):
@@ -171,7 +193,6 @@ def _detect_country(t_lower, z_lower):
     rand_lon = base_lon + random.uniform(-offset, offset)
     return target, rand_lat, rand_lon
 
-
 def _fetch_source_raw(src):
     results = []
     try:
@@ -191,7 +212,6 @@ def _fetch_source_raw(src):
         pass
     return results
 
-
 def _translate_batch(titles_en, translator, batch_size=8):
     translations = {}
     groups = [titles_en[i:i+batch_size] for i in range(0, len(titles_en), batch_size)]
@@ -206,7 +226,6 @@ def _translate_batch(titles_en, translator, batch_size=8):
             for orig in group:
                 translations[orig] = orig
     return translations
-
 
 def fetch_all_news():
     # Step 1: 並發爬取
@@ -270,6 +289,23 @@ def fetch_all_news():
         )
         conn.commit()
 
+    # Step 5: LINE 官方帳號 關鍵字智慧預警觸發
+    try:
+        with get_db_connection() as conn:
+            push_cfg = conn.execute("SELECT line_token, user_id, keywords FROM push_settings WHERE id=1").fetchone()
+        
+        if push_cfg and push_cfg[0] and push_cfg[1] and push_cfg[2]:
+            token, user_id, keywords_str = push_cfg
+            user_keywords = [k.strip() for k in keywords_str.split(",") if k.strip()]
+            
+            for title_zh, _, link_raw, source_name in all_processed:
+                for kw in user_keywords:
+                    if kw.lower() in title_zh.lower():
+                        alert_msg = f"📢 智能預警：偵測到關鍵字【{kw}】相關新聞！\n\n📰 標題：{title_zh}\n📡 來源：{source_name}\n🔗 原文連結：{link_raw}"
+                        send_line_push(token, user_id, alert_msg)
+                        break
+    except Exception:
+        pass
 
 # --- 5. 背景排程 ---
 @st.cache_resource
@@ -355,20 +391,19 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
             password_input = st.text_input("密碼", type="password", placeholder="******", key="login_pwd")
             
             if st.button("進入會員系統", use_container_width=True, key="btn_member_login"):
-                # 這裡將帳號密碼寫死進行驗證
                 if username_input.strip() == "tester1" and password_input == "donoterror":
                     st.session_state['logged_in'] = True
                     st.session_state['is_guest'] = False
                     st.session_state['username'] = username_input.strip()
                     st.session_state['current_view'] = "🏠 首頁總覽"
                     st.success("登入成功！正在載入系統...")
-                    time.sleep(0.5) # 稍微延遲讓用戶看到成功訊息
+                    time.sleep(0.5)
                     st.rerun()
                 elif not username_input.strip() or not password_input:
                     st.error("❌ 請輸入完整的帳號與密碼！")
                 else:
                     st.error("❌ 帳號或密碼錯誤，請重新輸入！")
-                    
+                        
     with col2:
         with st.container(border=True):
             st.markdown("### 🌐 訪客快捷通道")
@@ -381,6 +416,7 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
                 st.session_state['current_view'] = "🏠 首頁總覽"
                 st.rerun()
     st.stop()
+
 # --- 10. 側邊欄 ---
 st.sidebar.title(f"👤 {st.session_state['username']}")
 
@@ -419,14 +455,15 @@ if st.sidebar.button("🚪 登出/切換模式", key="side_logout_btn"):
         del st.session_state['monitor_started']
     st.rerun()
 
+
 # --- 11. 導覽列 ---
 def set_view(view_name):
     st.session_state['current_view'] = view_name
 
 st.write("### 🧭 系統主功能面板")
-# ✅ 新增影片專區至導覽列
 base_menu = ["🏠 首頁總覽", "🎬 影片專區", "⏳ 歷史總時間軸", "📊 數據統計分析", "🔍 關鍵字搜尋"]
-if not st.session_state['is_guest']:
+
+if not st.session_state.get('is_guest', False):
     base_menu.append("📢 LINE通知設定")
 
 cols_row1 = st.columns(len(base_menu))
@@ -449,7 +486,6 @@ if category_menu:
             set_view(item_name)
             st.rerun()
 
-st.write("---")
 
 # --- 12. 新聞卡片元件 ---
 def render_native_news_cards(df_target):
@@ -494,6 +530,7 @@ def render_native_news_cards(df_target):
                     st.cache_data.clear()
                     st.session_state['current_view'] = selected_nav
                     st.rerun()
+
 
 # --- 13. 各分頁路由渲染邏輯 ---
 current = st.session_state['current_view']
@@ -540,7 +577,7 @@ if current == "🏠 首頁總覽":
         st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
         render_native_news_cards(df_recent)
 
-# ✅ 新增：B. 影片專區
+# B. 影片專區
 elif current == "🎬 影片專區":
     st.title("🎬 24小時即時新聞影音專區")
     st.markdown("在這裡掌握全球知名新聞頻道的即時轉播。")
@@ -557,9 +594,9 @@ elif current == "🎬 影片專區":
     st.subheader("📺 科技與財經專欄")
     v_col3, v_col4 = st.columns(2)
     with v_col3:
-        st.video("https://www.youtube.com/watch?v=86YLFOog4GM") # 彭博 TV
+        st.video("https://www.youtube.com/watch?v=86YLFOog4GM")
     with v_col4:
-        st.video("https://www.youtube.com/watch?v=H74S940Z-yU") # 科技頻道範例
+        st.video("https://www.youtube.com/watch?v=H74S940Z-yU")
 
 # C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
@@ -567,7 +604,7 @@ elif current == "⏳ 歷史總時間軸":
     df_all = query_all_data()
     render_native_news_cards(df_all)
 
-# ✅ 修改：D. 數據統計分析 (加入圓餅圖並優化排版)
+# D. 數據統計分析
 elif current == "📊 數據統計分析":
     st.title("📊 全球新聞數據統計分析")
     df_all = query_all_data()
@@ -606,29 +643,62 @@ elif current == "🔍 關鍵字搜尋":
     if search_query and not df_all.empty:
         results = df_all[df_all['title_zh'].str.contains(search_query, na=False, case=False)]
         st.write(f"共找到 {len(results)} 筆符合條件的條目：")
+        results = results.copy()
         render_native_news_cards(results)
     elif search_query:
         st.info("目前尚無符合該關鍵字的新聞。")
 
-# F. LINE通知設定
+# F. LINE通知設定（完美閉合且無語法出軌版本）
 elif current == "📢 LINE通知設定":
-    st.title("📢 LINE Notify 智慧預警推送")
+    st.title("📢 LINE 官方帳號 智慧預警推送")
+    st.markdown("由於 LINE Notify 已停止服務，系統已全面升級為 LINE 官方帳號（Messaging API）主動預警推播機制。")
+    st.info("💡 提醒：請確保您的手機 LINE 已將該官方帳號加為好友，否則系統將無法成功推送訊息。")
+    
     with get_db_connection() as conn:
-        curr_config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
+        curr_config = conn.execute("SELECT line_token, user_id, keywords FROM push_settings WHERE id=1").fetchone()
+    
     display_token = curr_config[0] if curr_config else ""
-    display_keywords = curr_config[1] if curr_config else ""
+    display_uid = curr_config[1] if curr_config else ""
+    display_keywords = curr_config[2] if curr_config else ""
 
     with st.form("push_form_cfg"):
-        token_input = st.text_input("LINE Notify Token", value=display_token, type="password", key="line_tok_input")
-        kw_input = st.text_area("追蹤關鍵字 (英文逗號隔開)", value=display_keywords, key="line_kw_input")
-        if st.form_submit_button("儲存並開啟推播"):
-            with get_db_connection() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO push_settings (id, line_token, keywords) VALUES (1, ?, ?)",
-                    (token_input, kw_input.replace("，", ","))
-                )
-                conn.commit()
-            st.success("通知設定更新成功！")
+        st.markdown("### 🛠️ 憑證連線設定")
+        token_input = st.text_input(
+            "Channel Access Token", 
+            value=display_token, 
+            type="password", 
+            key="line_tok_input",
+            help="請填入 LINE Developers 後台，該官方帳號的 Messaging API 頁籤中的 Channel access token"
+        )
+        
+        uid_input = st.text_input(
+            "接收者 User ID (Your user ID)", 
+            value=display_uid, 
+            type="password", 
+            key="line_uid_input",
+            help="請填入您個人在 LINE Developers 後台看到的 Your user ID（注意：此非一般聊天用的 LINE ID）"
+        )
+        
+        st.markdown("### 🔍 預警關鍵字設定")
+        kw_input = st.text_area(
+            "追蹤關鍵字 (請以半形英文逗號隔開)", 
+            value=display_keywords, 
+            key="line_kw_input",
+            placeholder="例如：台積電,晶片,戰爭,降息"
+        )
+        
+        if st.form_submit_button("儲存並開啟推播", use_container_width=True):
+            if not token_input.strip() or not uid_input.strip():
+                st.error("❌ 儲存失敗！Channel Access Token 與 接收者 User ID 皆不能為空！")
+            else:
+                processed_keywords = kw_input.replace("，", ",")
+                with get_db_connection() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO push_settings (id, line_token, user_id, keywords) VALUES (1, ?, ?, ?)",
+                        (token_input.strip(), uid_input.strip(), processed_keywords)
+                    )
+                    conn.commit()
+                st.success("🎉 LINE 官方帳號智慧推播設定更新成功！下一輪抓取新聞時將自動比對關鍵字。")
 
 # G. 動態分類專屬時間軸
 elif current.startswith("🔖 "):
