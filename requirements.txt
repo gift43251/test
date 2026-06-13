@@ -10,3 +10,4 @@ geopy
 streamlit-folium
 apscheduler
 plotly
+line-bot-sdk
