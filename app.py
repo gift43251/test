@@ -364,13 +364,13 @@ def save_user_tags(username, tags):
         conn.execute("INSERT OR REPLACE INTO user_tags (username, tags) VALUES (?, ?)", (username, ",".join(tags)))
         conn.commit()
 
+
 # --- 7. 初始化 ---
-init_db()
-if 'monitor_started' not in st.session_state:
-    with st.spinner("智慧監控中心初始化，正在跨國同步最新全球焦點..."):
-        fetch_all_news()
-    start_scheduler()
-    st.session_state['monitor_started'] = True
+# if 'monitor_started' not in st.session_state:
+#     with st.spinner("智慧監控中心初始化..."):
+#         fetch_all_news()
+#     start_scheduler()
+#     st.session_state['monitor_started'] = True
 
 # --- 8. Session State 初始化 ---
 if 'logged_in' not in st.session_state:
