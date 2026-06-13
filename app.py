@@ -588,19 +588,27 @@ elif current == "🎬 影片專區":
     
     v_col1, v_col2 = st.columns(2)
     with v_col1:
-        st.subheader("🔴 聯合新聞網 24h Live")
-        st.video("https://www.youtube.com/watch?v=wM0g8EoGcA0") 
+        st.subheader("🔴 Sky News 24h Live")
+        st.video("https://www.youtube.com/watch?v=9Auqeyl15I8") 
     with v_col2:
-        st.subheader("🔴 Sky News Live (國際焦點)")
-        st.video("https://www.youtube.com/watch?v=9Auq9mYxFEE")
+        st.subheader("🔴 ABC News (國際焦點)")
+        st.video("https://www.youtube.com/watch?v=w_Ma8oQLmSM")
     
     st.write("---")
-    st.subheader("📺 科技與財經專欄")
-    v_col3, v_col4 = st.columns(2)
-    with v_col3:
-        st.video("https://www.youtube.com/watch?v=86YLFOog4GM")
-    with v_col4:
-        st.video("https://www.youtube.com/watch?v=H74S940Z-yU")
+    st.subheader("💻 科技與財經專欄")
+    
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        # 這裡改成國際知名的科技專欄
+        st.markdown("### ● 國際科技趨勢 (MKBHD / The Verge)")
+        # 【在這裡修改】換上國際科技影片的網址
+        st.video("https://www.youtube.com/watch?v=8p_UuU080aI")
+    
+    with col4:
+        # 這裡可以保留之前的財經專欄，或是放另一個國際科技影片
+        st.markdown("### ● 科技商業解密 (ColdFusion)")
+        st.video("https://www.youtube.com/watch?v=vVkaZ_XG0A8")U")
 
 # C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
