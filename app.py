@@ -1,7 +1,7 @@
 import streamlit as st
 import feedparser
 from deep_translator import GoogleTranslator
-from textblob import TextBl
+from textblob import TextBlob
 import streamlit as st
 import feedparser
 from deep_translator import GoogleTranslator
