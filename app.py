@@ -2,10 +2,6 @@ import streamlit as st
 import feedparser
 from deep_translator import GoogleTranslator
 from textblob import TextBlob
-import streamlit as st
-import feedparser
-from deep_translator import GoogleTranslator
-from textblob import TextBlob
 import sqlite3
 import pandas as pd
 import time
@@ -16,8 +12,6 @@ import re
 import random
 from collections import Counter
 from transformers import pipeline  # 引入 AI 語意仲裁所需套件
-from folium.plugins import MarkerCluster
-# --- 🔥 引入 Folium 相關套件 ---
 import folium
 from folium.plugins import MarkerCluster
 import streamlit.components.v1 as components
@@ -53,6 +47,7 @@ CATEGORY_THEMES = {
     "一般國際": {"emoji": "⚪", "label": "【一般國際】", "color": "gray"}
 }
 
+# 國家精確基準經緯度
 COUNTRY_COORDS = {
     "美國": [37.0902, -95.7129], "中國": [35.8617, 104.1954], "英國": [55.3781, -3.4360],
     "台灣": [23.6978, 120.9605], "烏克蘭": [48.3794, 31.1656], "中東": [32.4279, 53.6880],
@@ -166,7 +161,6 @@ def fetch_all_news():
                             title_en = ""
                         else:
                             title_en = entry.title
-                            title_zh = translator.translate(entry.title)
                             try: title_zh = translator.translate(entry.title)
                             except: title_zh = entry.title
 
@@ -185,15 +179,14 @@ def fetch_all_news():
                         elif "歐洲" in z_lower or re.search(r'\beurope\b', t_lower): target_country = "歐洲"
                         elif re.search(r'\bus\b', t_lower): target_country = "美國"
 
+                        # 讀取對應國家的固定基礎座標（不再加入隨機抖動抖動震盪）
                         base_lat, base_lon = COUNTRY_COORDS[target_country]
-                        rand_lat = base_lat + random.uniform(-0.8, 0.8) if target_country != "全球" else base_lat + random.uniform(-5, 5)
-                        rand_lon = base_lon + random.uniform(-0.8, 0.8) if target_country != "全球" else base_lon + random.uniform(-5, 5)
 
                         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         c.execute('''INSERT INTO monitor_logs
                                      (title_zh, category, source, time, link, sentiment, country, lat, lon)
                                      VALUES (?,?,?,?,?,?,?,?,?)''',
-                                  (title_zh, cat, src["name"], now, entry.link, sentiment_score, target_country, rand_lat, rand_lon))
+                                  (title_zh, cat, src["name"], now, entry.link, sentiment_score, target_country, base_lat, base_lon))
             except:
                 pass
         conn.commit()
@@ -259,7 +252,6 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
             password_input = st.text_input("密碼", type="password", placeholder="******", key="login_pwd")
             
             if st.button("進入會員系統", use_container_width=True, key="btn_member_login"):
-                # 🔥 這裡把帳號密碼寫死進行驗證
                 if username_input.strip() == "tester1" and password_input == "donoterror":
                     st.session_state['logged_in'] = True
                     st.session_state['is_guest'] = False
@@ -268,7 +260,7 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
                     st.rerun()
                 else:
                     st.error("❌ 帳號或密碼錯誤，請重新輸入！")
-                    
+                        
     with col2:
         with st.container(border=True):
             st.markdown("### 🌐 訪客快捷通道")
@@ -280,6 +272,7 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
                 st.session_state['guest_tags'] = list(DEFAULT_CATEGORIES.keys()) + ["一般國際"]
                 st.rerun()
     st.stop()
+
 # --- 6. 側邊欄分類複選勾選面板 ---
 st.sidebar.title(f"👤 {st.session_state['username']}")
 
@@ -311,10 +304,9 @@ if st.sidebar.button("🚪 登出/切換模式", key="side_logout_btn"):
     st.session_state['is_guest'] = False
     st.rerun()
 
-# --- 7. 🔥 頂部大選單導覽列（雙行排版設計，完美區隔系統與分類分頁） ---
+# --- 7. 頂部大選單導覽列 ---
 st.write("### 🧭 系統主功能面板")
 
-# 第一行：擺放系統內建基礎功能
 base_menu = ["🏠 首頁總覽", "⏳ 歷史總時間軸", "📊 數據統計分析", "🔍 關鍵字搜尋"]
 if not st.session_state['is_guest']:
     base_menu.append("📢 LINE通知設定")
@@ -324,7 +316,6 @@ for idx, item_name in enumerate(base_menu):
     if cols_row1[idx].button(item_name, use_container_width=True, key=f"nav_row1_{idx}"):
         st.session_state['current_view'] = item_name
 
-# 第二行：擺放所有從「軍事政治」開始的動態訂閱新聞分頁，做出漂亮分隔
 st.write("### 🔖 訂閱新聞分類頻道")
 category_menu = [f"🔖 {t}" for t in selected_tags]
 
@@ -336,7 +327,7 @@ if category_menu:
 
 st.write("---")
 
-# --- 8. 新聞卡片元件（精準修復：點擊移動後立刻重載更新，絕不卡死） ---
+# --- 8. 新聞卡片元件 ---
 def render_native_news_cards(df_target):
     if df_target.empty:
         st.info("💡 該時段或分類目前暫無新聞條目。")
@@ -360,11 +351,9 @@ def render_native_news_cards(df_target):
                 st.markdown(f"#### {row['title_zh']}")
                 st.markdown(f"⏱️ `發布時間: {row['time']}` &nbsp;|&nbsp; 📍 區域: **{row['country']}** &nbsp;|&nbsp; 📊 輿情: `{sentiment_text}`")
             with col_btn:
-                # 前往原文按鈕
                 st.link_button("🔗 前往原文", row['link'], use_container_width=True, key=f"lnk_{idx}_{news_id}")
                 st.write("")
 
-                # 移動至選單
                 selected_nav = st.selectbox(
                     "移動至 👇",
                     options=nav_options,
@@ -373,19 +362,12 @@ def render_native_news_cards(df_target):
                     label_visibility="collapsed"
                 )
 
-                # 當點選移動分頁時，即時寫入、強制清空快取，杜絕卡死
                 if selected_nav != "請選擇要移動至的分頁...":
                     new_category = selected_nav.replace("🔖 ", "")
-
-                    # 1. 修改資料庫欄位
                     with get_db_connection() as conn:
                         conn.execute("UPDATE monitor_logs SET category = ? WHERE id = ?", (new_category, news_id))
                         conn.commit()
-
-                    # 2. 自動跳轉檢視到目標分頁
                     st.session_state['current_view'] = selected_nav
-
-                    # 3. 強制刷新網頁
                     st.rerun()
 
 # --- 9. 各分頁路由渲染邏輯 ---
@@ -437,13 +419,6 @@ if st.session_state['current_view'] == "🏠 首頁總覽":
     st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
     render_native_news_cards(df_recent[df_recent['category'] != "影音新聞"])
 
-elif st.session_state['current_view'] == "🎥 影片專區":
-    st.title("🎥 全球精選影音與異常反饋專區（不登錄地圖）")
-    if not df_all.empty:
-        df_videos = df_all[df_all['category'] == "影音新聞"]
-        render_native_news_cards(df_videos, is_video_view=True)
-    else:
-        st.info("💡 目前資料庫中暫無影音新聞或故障回傳。")
 # B. ⏳ 歷史總時間軸
 elif st.session_state['current_view'] == "⏳ 歷史總時間軸":
     st.title("⏳ 全球歷史即時總時間軸")
