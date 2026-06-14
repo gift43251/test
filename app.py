@@ -257,12 +257,18 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
             st.markdown("### 🔑 會員/自訂用戶登入")
             username_input = st.text_input("使用者名稱", placeholder="請輸入使用者名稱", key="login_user")
             password_input = st.text_input("密碼", type="password", placeholder="******", key="login_pwd")
+            
             if st.button("進入會員系統", use_container_width=True, key="btn_member_login"):
-                if username_input.strip():
+                # 🔥 這裡把帳號密碼寫死進行驗證
+                if username_input.strip() == "test1" and password_input == "donoterror":
                     st.session_state['logged_in'] = True
                     st.session_state['is_guest'] = False
                     st.session_state['username'] = username_input.strip()
+                    st.success("登入成功！正在跳轉...")
                     st.rerun()
+                else:
+                    st.error("❌ 帳號或密碼錯誤，請重新輸入！")
+                    
     with col2:
         with st.container(border=True):
             st.markdown("### 🌐 訪客快捷通道")
@@ -274,7 +280,6 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
                 st.session_state['guest_tags'] = list(DEFAULT_CATEGORIES.keys()) + ["一般國際"]
                 st.rerun()
     st.stop()
-
 # --- 6. 側邊欄分類複選勾選面板 ---
 st.sidebar.title(f"👤 {st.session_state['username']}")
 
