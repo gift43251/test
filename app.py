@@ -143,6 +143,10 @@ def init_db():
             c.execute("ALTER TABLE push_settings ADD COLUMN user_id TEXT;")
         except sqlite3.OperationalError:
             pass  # 如果欄位以前就已經加過了，就直接忽略，不會卡住
+            
+        # 關鍵防呆：確保 push_settings 裡面一定要有 id=1 的預設紀錄，防止 .fetchone() 抓到 None 報錯
+        c.execute('''INSERT OR IGNORE INTO push_settings (id, line_token, user_id, keywords) 
+                     VALUES (1, '', '', '')''')
         
         # 加速查詢索引
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
@@ -150,7 +154,7 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
         conn.commit()
 
-# 🔥【關鍵修復】在聲明完 init_db 函數後，立刻執行它，確保後面的代碼不會因為找不到表而崩潰
+# 在聲明完 init_db 函數後，立刻執行它，確保後面的代碼不會因為找不到表而崩潰
 init_db()
 
 # --- 4. 新聞抓取與 LINE 推播 ---
@@ -662,7 +666,6 @@ elif current == "🔍 關鍵字搜尋":
 # F. LINE通知設定
 elif current == "📢 LINE通知設定":
     st.title("📢 LINE 官方帳號 智慧預警推送")
-    st.markdown("由於 LINE Notify 已停止服務，系統已全面升級為 LINE 官方帳號（Messaging API）主動預警推播機制。")
     st.info("💡 提醒：請確保您的手機 LINE 已將該官方帳號加為好友，否則系統將無法成功推送訊息。")
     
     with get_db_connection() as conn:
