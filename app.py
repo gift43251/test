@@ -260,7 +260,7 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
             
             if st.button("進入會員系統", use_container_width=True, key="btn_member_login"):
                 # 🔥 這裡把帳號密碼寫死進行驗證
-                if username_input.strip() == "test1" and password_input == "donoterror":
+                if username_input.strip() == "tester1" and password_input == "donoterror":
                     st.session_state['logged_in'] = True
                     st.session_state['is_guest'] = False
                     st.session_state['username'] = username_input.strip()
