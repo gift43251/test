@@ -1,4 +1,7 @@
-%%writefile app.py
+import streamlit as st
+import feedparser
+from deep_translator import GoogleTranslator
+from textblob import TextBl
 import streamlit as st
 import feedparser
 from deep_translator import GoogleTranslator
