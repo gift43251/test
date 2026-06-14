@@ -47,7 +47,7 @@ CATEGORY_THEMES = {
     "一般國際": {"emoji": "⚪", "label": "【一般國際】", "color": "gray"}
 }
 
-# 🔥【關鍵修改】全新擴充的世界經緯度字典：包含全世界 190+ 國家、全球前 50 大主要城市，以及台北
+# 擴充的世界經緯度字典：包含全世界 190+ 國家、全球前 50 大主要城市，以及台北
 LOCATION_COORDS = {
     # --- 台灣與特定城市 ---
     "台北": [25.0330, 121.5654], "taipei": [25.0330, 121.5654],
@@ -106,7 +106,6 @@ LOCATION_COORDS = {
     "西雅圖": [47.6062, -122.3321], "seattle": [47.6062, -122.3321],
     "邁阿密": [25.7617, -80.1918], "miami": [25.7617, -80.1918],
     "休士頓": [29.7604, -95.3698], "houston": [29.7604, -95.3698],
-    "首爾": [37.5665, 126.9780],
     
     # --- 全世界主要國家 (精確中央座標) ---
     "台灣": [23.6978, 120.9605], "taiwan": [23.6978, 120.9605],
@@ -156,14 +155,28 @@ LOCATION_COORDS = {
     "愛爾蘭": [53.4129, -8.2439], "ireland": [53.4129, -8.2439],
     "葡萄牙": [39.3999, -8.2245], "portugal": [39.3999, -8.2245],
     "紐幾內亞": [-9.4438, 147.1803], "巴拿馬": [8.5380, -80.7821],
-    "紐西蘭": [-40.9006, 174.8860], "阿聯酋": [23.4241, 53.8478], "uae": [23.4241, 53.8478],
+    "阿聯酋": [23.4241, 53.8478], "uae": [23.4241, 53.8478],
     "波蘭": [51.9194, 19.1451], "poland": [51.9194, 19.1451],
     "捷克": [49.8175, 15.4730], "匈牙利": [47.1625, 19.5033],
     "羅馬尼亞": [45.9432, 24.9668], "保加利亞": [42.7339, 25.4858],
-    "芬蘭": [61.9241, 25.7482], "冰島": [64.9631, -19.0208], "iceland": [64.9631, -19.0208],
+    "冰島": [64.9631, -19.0208], "iceland": [64.9631, -19.0208],
     "中東": [29.2985, 42.5510], "middle east": [29.2985, 42.5510],
     "歐洲": [48.6909, 9.1406], "europe": [48.6909, 9.1406],
     "全球": [20.0, 0.0], "world": [20.0, 0.0], "global": [20.0, 0.0]
+}
+
+# 優先比對的熱門詞彙/企業/名人對應表
+HOT_KEYWORDS_LOCATIONS = {
+    "nvidia": "美國", "輝達": "美國",
+    "tsmc": "台灣", "台積電": "台灣",
+    "apple": "美國", "蘋果公司": "美國",
+    "google": "美國",
+    "spacex": "美國",
+    "samsung": "南韓", "三星": "南韓",
+    "biden": "美國", "拜登": "美國",
+    "trump": "美國", "川普": "美國",
+    "putin": "俄羅斯", "普丁": "俄羅斯",
+    "zelenskyy": "烏克蘭", "澤倫斯基": "烏克蘭"
 }
 
 CRISIS_STRONG_WORDS = [
@@ -172,6 +185,79 @@ CRISIS_STRONG_WORDS = [
     "combat", "drone", "attack", "missile", "hostage", "shot dead", "hijack", "explode", "bomb"
 ]
 
+# --- 4. 全新調整的地點偵測系統 ---
+def _detect_country(t_lower, z_lower):
+    target = None
+    
+    # 優先級 1：檢查是否包含熱門關鍵字
+    for kw, mapped_loc in HOT_KEYWORDS_LOCATIONS.items():
+        if kw in t_lower or kw in z_lower:
+            target = mapped_loc
+            break
+            
+    # 優先級 2：若無熱門詞，則進行標準國家與城市文字匹配
+    if not target:
+        for loc_name in LOCATION_COORDS.keys():
+            if loc_name.isalpha():
+                if re.search(r'\b' + re.escape(loc_name) + r'\b', t_lower):
+                    target = loc_name
+                    break
+            else:
+                if loc_name in z_lower:
+                    target = loc_name
+                    break
+                    
+    # 優先級 3：若文字完全無匹配，啟動自動備援定位系統
+    if not target or target in ["全球", "world", "global"]:
+        if "white house" in t_lower or "wall street" in t_lower:
+            target = "美國"
+        elif "kremlin" in t_lower:
+            target = "俄羅斯"
+        else:
+            target = None  # 自動定位也找不到，標記為 None
+            
+    # 優先級 4：如果完全找不到地點，回傳特定標記，不顯示在地圖上
+    if target is None:
+        return "未定地點", None, None
+        
+    coords = LOCATION_COORDS.get(target, None)
+    if not coords:
+        return "未定地點", None, None
+        
+    # 將英文名稱轉回對應的漂亮中文標籤顯示在地圖上
+    display_mapping = {
+        "tokyo": "東京", "new york": "紐約", "nyc": "紐約", "london": "倫敦", "paris": "巴黎",
+        "seoul": "首爾", "beijing": "北京", "shanghai": "上海", "hong kong": "香港", "singapore": "新加坡",
+        "los angeles": "洛杉磯", "chicago": "芝加哥", "san francisco": "舊金山", "washington": "華盛頓",
+        "sydney": "雪梨", "melbourne": "墨爾本", "toronto": "多倫多", "vancouver": "溫哥華",
+        "berlin": "柏林", "frankfurt": "法蘭克福", "moscow": "莫斯科", "bangkok": "曼谷",
+        "jakarta": "雅加達", "kuala lumpur": "吉隆坡", "manila": "馬尼拉", "mumbai": "孟買",
+        "new delhi": "新德里", "dubai": "杜拜", "istanbul": "伊斯坦堡", "cairo": "開羅",
+        "johannesburg": "約翰尼斯堡", "sao paulo": "聖保羅", "rio de janeiro": "里約熱內盧",
+        "buenos aires": "布宜諾斯艾利斯", "mexico city": "墨西哥城", "stockholm": "斯德哥爾摩",
+        "amsterdam": "阿姆斯特丹", "brussels": "布魯塞爾", "vienna": "維也納", "madrid": "馬德里",
+        "barcelona": "巴塞隆納", "rome": "羅馬", "milan": "米蘭", "athens": "雅典",
+        "copenhagen": "哥本哈根", "oslo": "奧斯陸", "helsinki": "赫爾辛基", "zurich": "蘇黎世",
+        "geneva": "日內瓦", "manchester": "曼徹斯特", "boston": "波士頓", "seattle": "西雅圖",
+        "miami": "邁阿密", "houston": "休士頓", "taiwan": "台灣", "america": "美國",
+        "united states": "美國", "usa": "美國", "china": "中國", "japan": "日本",
+        "korea": "南韓", "south korea": "南韓", "united kingdom": "英國", "uk": "英國",
+        "britain": "英國", "france": "法國", "germany": "德國", "ukraine": "烏克蘭",
+        "russia": "俄羅斯", "israel": "以色列", "palestine": "巴勒斯坦", "gaza": "加薩",
+        "india": "印度", "canada": "加拿大", "australia": "澳洲", "new zealand": "紐西蘭",
+        "vietnam": "越南", "thailand": "泰國", "philippines": "菲律賓", "malaysia": "馬來西亞",
+        "indonesia": "印尼", "italy": "義大利", "spain": "西班牙", "netherlands": "荷蘭",
+        "belgium": "比利時", "switzerland": "瑞士", "sweden": "瑞典", "norway": "挪威",
+        "finland": "芬蘭", "denmark": "丹麥", "austria": "奧地利", "turkey": "土耳其",
+        "saudi arabia": "沙烏地阿拉伯", "iran": "伊朗", "iraq": "伊拉克", "egypt": "埃及",
+        "south africa": "南非", "brazil": "巴西", "argentina": "阿根廷", "mexico": "墨西哥",
+        "cuba": "古巴", "north korea": "北韓", "pakistan": "巴基斯坦", "greece": "希臘",
+        "ireland": "愛爾蘭", "portugal": "葡萄牙", "uae": "阿聯酋", "poland": "波蘭",
+        "iceland": "冰島", "middle east": "中東", "europe": "歐洲", "world": "全球", "global": "全球", "taipei": "台北"
+    }
+    
+    final_country_name = display_mapping.get(target, target)
+    return final_country_name, coords[0], coords[1]
 # --- 2. AI 分類器 ---
 @st.cache_resource(show_spinner=False)
 def load_classifier():
