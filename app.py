@@ -138,7 +138,7 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS push_settings
                      (id INTEGER PRIMARY KEY, line_token TEXT, user_id TEXT, keywords TEXT)''')
         
-        # 【新增此段補丁】強制幫舊的資料表追加 user_id 欄位，防止舊資料庫報錯
+        # 強制幫舊的資料表追加 user_id 欄位，防止舊資料庫報錯
         try:
             c.execute("ALTER TABLE push_settings ADD COLUMN user_id TEXT;")
         except sqlite3.OperationalError:
@@ -149,6 +149,10 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
         conn.commit()
+
+# 🔥【關鍵修復】在聲明完 init_db 函數後，立刻執行它，確保後面的代碼不會因為找不到表而崩潰
+init_db()
+
 # --- 4. 新聞抓取與 LINE 推播 ---
 def send_line_push(channel_access_token, user_id, message_text):
     """透過 LINE Messaging API 發送主動推播訊息"""
@@ -232,7 +236,6 @@ def _translate_batch(titles_en, translator, batch_size=8):
     return translations
 
 def fetch_all_news():
-    # Step 1: 並發爬取
     all_raw = []
     with ThreadPoolExecutor(max_workers=len(NEWS_SOURCES)) as executor:
         futures = [executor.submit(_fetch_source_raw, src) for src in NEWS_SOURCES]
@@ -242,7 +245,6 @@ def fetch_all_news():
     if not all_raw:
         return
 
-    # Step 2: 過濾已存在 DB 的連結
     with get_db_connection() as conn:
         existing_links = set(
             row[0] for row in conn.execute("SELECT link FROM monitor_logs").fetchall()
@@ -252,7 +254,6 @@ def fetch_all_news():
     if not new_entries:
         return
 
-    # Step 3: 分流中英文，批次翻譯
     translator = GoogleTranslator(source='auto', target='zh-TW')
     to_translate = []
     chinese_ready = []
@@ -275,7 +276,6 @@ def fetch_all_news():
 
     all_processed = chinese_ready + translated_entries
 
-    # Step 4: 分類、地理、情緒分析，批次寫入 DB
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows_to_insert = []
     for title_zh, title_en, link_raw, source_name in all_processed:
@@ -293,7 +293,6 @@ def fetch_all_news():
         )
         conn.commit()
 
-    # Step 5: LINE 官方帳號 關鍵字智慧預警觸發
     try:
         with get_db_connection() as conn:
             push_cfg = conn.execute("SELECT line_token, user_id, keywords FROM push_settings WHERE id=1").fetchone()
@@ -364,13 +363,6 @@ def save_user_tags(username, tags):
         conn.execute("INSERT OR REPLACE INTO user_tags (username, tags) VALUES (?, ?)", (username, ",".join(tags)))
         conn.commit()
 
-
-# --- 7. 初始化 ---
-# if 'monitor_started' not in st.session_state:
-#     with st.spinner("智慧監控中心初始化..."):
-#         fetch_all_news()
-#     start_scheduler()
-#     st.session_state['monitor_started'] = True
 
 # --- 8. Session State 初始化 ---
 if 'logged_in' not in st.session_state:
@@ -586,31 +578,24 @@ elif current == "🎬 影片專區":
     st.title("🎬 24小時即時新聞影音專區")
     st.markdown("系統自動偵測並彙整爬蟲抓取到的最新影音與動態新聞。")
     
-    # 從資料庫讀取最新的數據
     df_news = query_all_data()
     
     if not df_news.empty:
-        # 篩選標題中含有影音關鍵字的新聞（可根據需求自行調整關鍵字）
         video_keywords = ["影片", "影音", "直播", "live", "video", "視頻", "播報"]
         df_videos = df_news[df_news['title_zh'].str.lower().str.contains('|'.join(video_keywords), na=False)]
         
         if not df_videos.empty:
             st.subheader(f"📹 最新偵測到的影音新聞 (共 {len(df_videos)} 則)")
             
-            # 以每行兩格 (2 columns) 的排版動態顯示
             for i in range(0, len(df_videos), 2):
                 v_col1, v_col2 = st.columns(2)
                 
-                # 第一格
                 with v_col1:
                     row1 = df_videos.iloc[i]
                     st.markdown(f"### 🔴 {row1['title_zh']}")
                     st.caption(f"📡 來源：{row1['source']} | 📅 時間：{row1['time']} | 🏷️ 分類：{row1['category']}")
-                    # 如果欄位本身是可播放的影片網址，可使用 st.video(row1['link'])
-                    # 若是一般新聞連結，則提供超連結按鈕引導使用者觀看
                     st.link_button("🌐 前往觀看影音新聞", row1['link'], use_container_width=True)
                 
-                # 第二格（檢查是否有下一則新聞，有的話才渲染）
                 if i + 1 < len(df_videos):
                     with v_col2:
                         row2 = df_videos.iloc[i+1]
@@ -674,7 +659,7 @@ elif current == "🔍 關鍵字搜尋":
     elif search_query:
         st.info("目前尚無符合該關鍵字的新聞。")
 
-# F. LINE通知設定（完美閉合且無語法出軌版本）
+# F. LINE通知設定
 elif current == "📢 LINE通知設定":
     st.title("📢 LINE 官方帳號 智慧預警推送")
     st.markdown("由於 LINE Notify 已停止服務，系統已全面升級為 LINE 官方帳號（Messaging API）主動預警推播機制。")
