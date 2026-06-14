@@ -4,6 +4,7 @@ from deep_translator import GoogleTranslator
 from textblob import TextBlob
 import sqlite3
 import pandas as pd
+import requests
 import time
 import threading
 from datetime import datetime, timedelta
@@ -141,8 +142,32 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
         conn.commit()
 
-# --- 4. 新聞抓取（並發 + 批次翻譯） ---
 
+# === 修正部分：加入對應 LINE 官方帳號的 Messaging API 函式 ===
+def send_line_messaging_api(channel_access_token, user_id, message_text):
+    """使用 LINE Messaging API 推送 Push Message 給指定用戶"""
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {channel_access_token}"
+    }
+    payload = {
+        "to": user_id,
+        "messages": [
+            {
+                "type": "text",
+                "text": message_text
+            }
+        ]
+    }
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+# --- 4. 新聞抓取（並發 + 批次翻譯） ---
 def _detect_country(t_lower, z_lower):
     if "美國" in z_lower or "川普" in z_lower or "白宮" in z_lower or re.search(r'\btrump\b|\bamerica\b|\bwashington\b|\bwhite\s+house\b|\busa\b', t_lower):
         target = "美國"
@@ -269,6 +294,25 @@ def fetch_all_news():
             rows_to_insert
         )
         conn.commit()
+
+        # === 修正部分：寫入完成後，自動進行 LINE 關鍵字比對與推播 ===
+        try:
+            config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
+            if config and config[0]:
+                saved_credentials = config[0].split("|||")
+                if len(saved_credentials) == 2:
+                    channel_access_token = saved_credentials[0].strip()
+                    my_user_id = saved_credentials[1].strip()
+                    
+                    keywords = [kw.strip().lower() for kw in config[1].split(",") if kw.strip()]
+                    if keywords:
+                        for title_zh, title_en, link_raw, source_name in all_processed:
+                            match_text = (title_en + " " + title_zh).lower()
+                            if any(kw in match_text for kw in keywords):
+                                msg = f"\n🔔 【新聞預警】\n📰 標題: {title_zh}\n📡 來源: {source_name}\n🔗 連結: {link_raw}"
+                                send_line_messaging_api(channel_access_token, my_user_id, msg)
+        except Exception:
+            pass
 
 
 # --- 5. 背景排程 ---
@@ -416,7 +460,6 @@ def set_view(view_name):
     st.session_state['current_view'] = view_name
 
 st.write("### 🧭 系統主功能面板")
-# ✅ 新增影片專區至導覽列
 base_menu = ["🏠 首頁總覽", "🎬 影片專區", "⏳ 歷史總時間軸", "📊 數據統計分析", "🔍 關鍵字搜尋"]
 if not st.session_state['is_guest']:
     base_menu.append("📢 LINE通知設定")
@@ -532,7 +575,7 @@ if current == "🏠 首頁總覽":
         st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
         render_native_news_cards(df_recent)
 
-# ✅ 新增：B. 影片專區
+# B. 影片專區
 elif current == "🎬 影片專區":
     st.title("🎬 24小時即時新聞影音專區")
     st.markdown("在這裡掌握全球知名新聞頻道的即時轉播。")
@@ -559,7 +602,7 @@ elif current == "⏳ 歷史總時間軸":
     df_all = query_all_data()
     render_native_news_cards(df_all)
 
-# ✅ 修改：D. 數據統計分析 (加入圓餅圖並優化排版)
+# D. 數據統計分析
 elif current == "📊 數據統計分析":
     st.title("📊 全球新聞數據統計分析")
     df_all = query_all_data()
@@ -602,25 +645,47 @@ elif current == "🔍 關鍵字搜尋":
     elif search_query:
         st.info("目前尚無符合該關鍵字的新聞。")
 
-# F. LINE通知設定
+
+# === 修正部分：將原本的 LINE Notify 介面替換為正確的 Messaging API 設定介面 ===
 elif current == "📢 LINE通知設定":
-    st.title("📢 LINE Notify 智慧預警推送")
+    st.title("📢 LINE 官方帳號智慧預警推送")
+    st.markdown("""
+    由於 LINE Notify 已停止服務，本系統現已全面升級對接 **LINE Messaging API**。
+    請至 LINE Developers 後台獲取以下憑證。
+    """)
+    
     with get_db_connection() as conn:
         curr_config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
-    display_token = curr_config[0] if curr_config else ""
+    
+    display_token = ""
+    display_userid = ""
+    if curr_config and curr_config[0] and "|||" in curr_config[0]:
+        parts = curr_config[0].split("|||")
+        display_token = parts[0]
+        display_userid = parts[1]
+    elif curr_config and curr_config[0]:
+        display_token = curr_config[0]
+
     display_keywords = curr_config[1] if curr_config else ""
 
     with st.form("push_form_cfg"):
-        token_input = st.text_input("LINE Notify Token", value=display_token, type="password", key="line_tok_input")
-        kw_input = st.text_area("追蹤關鍵字 (英文逗號隔開)", value=display_keywords, key="line_kw_input")
-        if st.form_submit_button("儲存並開啟推播"):
-            with get_db_connection() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO push_settings (id, line_token, keywords) VALUES (1, ?, ?)",
-                    (token_input, kw_input.replace("，", ","))
-                )
-                conn.commit()
-            st.success("通知設定更新成功！")
+        token_input = st.text_input("1. Channel Access Token (長期有效)", value=display_token, type="password", key="line_tok_input")
+        userid_input = st.text_input("2. Your User ID (你的個人用戶識別碼)", value=display_userid, placeholder="通常為 U 開頭的 32 位元字串", key="line_uid_input")
+        kw_input = st.text_area("3. 追蹤關鍵字 (請使用半形英文逗號隔開)", value=display_keywords, placeholder="例如: 台積電,晶片,戰爭", key="line_kw_input")
+        
+        if st.form_submit_button("儲存並開啟智慧推播"):
+            if token_input.strip() and userid_input.strip():
+                combined_token = f"{token_input.strip()}|||{userid_input.strip()}"
+                with get_db_connection() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO push_settings (id, line_token, keywords) VALUES (1, ?, ?)",
+                        (combined_token, kw_input.replace("，", ","))
+                    )
+                    conn.commit()
+                st.success("🎉 LINE 官方帳號通知設定更新成功！系統已開啟每 5 分鐘自動比對與推送。")
+            else:
+                st.error("❌ 請務必填寫 Channel Access Token 與 User ID 才能啟用發送功能。")
+
 
 # G. 動態分類專屬時間軸
 elif current.startswith("🔖 "):
