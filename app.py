@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- 1. 全域配置與資料庫設定 ---
-st.set_page_config(page_title="全球新聞智慧監控中心", layout="wide")
+st.set_page_config(page_title="全球新聞智慧监控中心", layout="wide")
 
 DB_NAME = 'news_monitor_v9.db'
 
@@ -143,7 +143,6 @@ def init_db():
         conn.commit()
 
 
-# === 修正部分：加入對應 LINE 官方帳號的 Messaging API 函式 ===
 def send_line_messaging_api(channel_access_token, user_id, message_text):
     """使用 LINE Messaging API 推送 Push Message 給指定用戶"""
     url = "https://api.line.me/v2/bot/message/push"
@@ -167,7 +166,7 @@ def send_line_messaging_api(channel_access_token, user_id, message_text):
         return False
 
 
-# --- 4. 新聞抓取（並發 + 批次翻譯） ---
+# --- 4. 新聞抓取（並發 + 批次翻譯 + 強制推播優化） ---
 def _detect_country(t_lower, z_lower):
     if "美國" in z_lower or "川普" in z_lower or "白宮" in z_lower or re.search(r'\btrump\b|\bamerica\b|\bwashington\b|\bwhite\s+house\b|\busa\b', t_lower):
         target = "美國"
@@ -251,52 +250,53 @@ def fetch_all_news():
         )
 
     new_entries = [(t, l, s) for t, l, s in all_raw if l not in existing_links]
-    if not new_entries:
-        return
+    
+    # 只要有新入庫新聞，才處理寫入
+    if new_entries:
+        # Step 3: 分流中英文，批次翻譯
+        translator = GoogleTranslator(source='auto', target='zh-TW')
+        to_translate = []
+        chinese_ready = []
 
-    # Step 3: 分流中英文，批次翻譯
-    translator = GoogleTranslator(source='auto', target='zh-TW')
-    to_translate = []
-    chinese_ready = []
+        for title_raw, link_raw, source_name in new_entries:
+            is_chinese = any('\u4e00' <= char <= '\u9fff' for char in title_raw)
+            if is_chinese:
+                chinese_ready.append((title_raw, "", link_raw, source_name))
+            else:
+                to_translate.append((title_raw, link_raw, source_name))
 
-    for title_raw, link_raw, source_name in new_entries:
-        is_chinese = any('\u4e00' <= char <= '\u9fff' for char in title_raw)
-        if is_chinese:
-            chinese_ready.append((title_raw, "", link_raw, source_name))
-        else:
-            to_translate.append((title_raw, link_raw, source_name))
+        translation_map = {}
+        if to_translate:
+            translation_map = _translate_batch([t[0] for t in to_translate], translator)
 
-    translation_map = {}
-    if to_translate:
-        translation_map = _translate_batch([t[0] for t in to_translate], translator)
+        translated_entries = []
+        for title_en, link_raw, source_name in to_translate:
+            title_zh = translation_map.get(title_en, title_en)
+            translated_entries.append((title_zh, title_en, link_raw, source_name))
 
-    translated_entries = []
-    for title_en, link_raw, source_name in to_translate:
-        title_zh = translation_map.get(title_en, title_en)
-        translated_entries.append((title_zh, title_en, link_raw, source_name))
+        all_processed = chinese_ready + translated_entries
 
-    all_processed = chinese_ready + translated_entries
+        # Step 4: 分類、地理、情緒分析，批次寫入 DB
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rows_to_insert = []
+        for title_zh, title_en, link_raw, source_name in all_processed:
+            cat = hybrid_news_classifier(title_zh, title_en)
+            sentiment_score = TextBlob(title_en if title_en else title_zh).sentiment.polarity
+            country, rand_lat, rand_lon = _detect_country(title_en.lower(), title_zh.lower())
+            rows_to_insert.append((title_zh, cat, source_name, now, link_raw, sentiment_score, country, rand_lat, rand_lon))
 
-    # Step 4: 分類、地理、情緒分析，批次寫入 DB
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    rows_to_insert = []
-    for title_zh, title_en, link_raw, source_name in all_processed:
-        cat = hybrid_news_classifier(title_zh, title_en)
-        sentiment_score = TextBlob(title_en if title_en else title_zh).sentiment.polarity
-        country, rand_lat, rand_lon = _detect_country(title_en.lower(), title_zh.lower())
-        rows_to_insert.append((title_zh, cat, source_name, now, link_raw, sentiment_score, country, rand_lat, rand_lon))
+        with get_db_connection() as conn:
+            conn.executemany(
+                '''INSERT OR IGNORE INTO monitor_logs
+                   (title_zh, category, source, time, link, sentiment, country, lat, lon)
+                   VALUES (?,?,?,?,?,?,?,?,?)''',
+                rows_to_insert
+            )
+            conn.commit()
 
-    with get_db_connection() as conn:
-        conn.executemany(
-            '''INSERT OR IGNORE INTO monitor_logs
-               (title_zh, category, source, time, link, sentiment, country, lat, lon)
-               VALUES (?,?,?,?,?,?,?,?,?)''',
-            rows_to_insert
-        )
-        conn.commit()
-
-        # === 修正部分：寫入完成後，自動進行 LINE 關鍵字比對與推播 ===
-        try:
+    # === [關鍵修正點] === 不管有無新新聞，每次觸發同步皆對 DB 最新的 10 條新聞進行關鍵字強制追蹤推播
+    try:
+        with get_db_connection() as conn:
             config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
             if config and config[0]:
                 saved_credentials = config[0].split("|||")
@@ -306,13 +306,16 @@ def fetch_all_news():
                     
                     keywords = [kw.strip().lower() for kw in config[1].split(",") if kw.strip()]
                     if keywords:
-                        for title_zh, title_en, link_raw, source_name in all_processed:
-                            match_text = (title_en + " " + title_zh).lower()
-                            if any(kw in match_text for kw in keywords):
+                        recent_news = conn.execute(
+                            "SELECT title_zh, source, link FROM monitor_logs ORDER BY time DESC LIMIT 10"
+                        ).fetchall()
+                        
+                        for title_zh, source_name, link_raw in recent_news:
+                            if any(kw in title_zh.lower() for kw in keywords):
                                 msg = f"\n🔔 【新聞預警】\n📰 標題: {title_zh}\n📡 來源: {source_name}\n🔗 連結: {link_raw}"
                                 send_line_messaging_api(channel_access_token, my_user_id, msg)
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 # --- 5. 背景排程 ---
@@ -646,7 +649,7 @@ elif current == "🔍 關鍵字搜尋":
         st.info("目前尚無符合該關鍵字的新聞。")
 
 
-# === 修正部分：將原本的 LINE Notify 介面替換為正確的 Messaging API 設定介面 ===
+# F. LINE 通知設定頁面
 elif current == "📢 LINE通知設定":
     st.title("📢 LINE 官方帳號智慧預警推送")
     st.markdown("""
