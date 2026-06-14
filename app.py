@@ -632,4 +632,3 @@ elif current.startswith("🔖 "):
     else:
         render_native_news_cards(tag_df)
 
-幫我把登入帳號寫死，帳號：tester1、密碼：donoterror
