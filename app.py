@@ -136,6 +136,10 @@ def init_db():
                      (username TEXT PRIMARY KEY, tags TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS push_settings
                      (id INTEGER PRIMARY KEY, line_token TEXT, keywords TEXT)''')
+        # 新增用來避免重複發送的通知紀錄表
+        c.execute('''CREATE TABLE IF NOT EXISTS sent_notifications
+                     (link TEXT PRIMARY KEY)''')
+        
         # 加速查詢索引
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
@@ -166,7 +170,7 @@ def send_line_messaging_api(channel_access_token, user_id, message_text):
         return False
 
 
-# --- 4. 新聞抓取（並發 + 批次翻譯 + 強制推播優化） ---
+# --- 4. 新聞抓取（並發 + 批次翻譯 + 具備去重機制的推播優化） ---
 def _detect_country(t_lower, z_lower):
     if "美國" in z_lower or "川普" in z_lower or "白宮" in z_lower or re.search(r'\btrump\b|\bamerica\b|\bwashington\b|\bwhite\s+house\b|\busa\b', t_lower):
         target = "美國"
@@ -294,7 +298,7 @@ def fetch_all_news():
             )
             conn.commit()
 
-    # === [關鍵修正點] === 不管有無新新聞，每次觸發同步皆對 DB 最新的 10 條新聞進行關鍵字強制追蹤推播
+    # === [優化推播機制：新增防重複檢查] ===
     try:
         with get_db_connection() as conn:
             config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
@@ -306,14 +310,26 @@ def fetch_all_news():
                     
                     keywords = [kw.strip().lower() for kw in config[1].split(",") if kw.strip()]
                     if keywords:
+                        # 檢視最近 10 條入庫新聞
                         recent_news = conn.execute(
                             "SELECT title_zh, source, link FROM monitor_logs ORDER BY time DESC LIMIT 10"
                         ).fetchall()
                         
                         for title_zh, source_name, link_raw in recent_news:
-                            if any(kw in title_zh.lower() for kw in keywords):
+                            # 1. 檢查此新聞是否早已成功發送過
+                            already_sent = conn.execute(
+                                "SELECT 1 FROM sent_notifications WHERE link = ?", (link_raw,)
+                            ).fetchone()
+                            
+                            # 2. 如果未曾發送過，且內容命中關鍵字，才允許發送
+                            if not already_sent and any(kw in title_zh.lower() for kw in keywords):
                                 msg = f"\n🔔 【新聞預警】\n📰 標題: {title_zh}\n📡 來源: {source_name}\n🔗 連結: {link_raw}"
-                                send_line_messaging_api(channel_access_token, my_user_id, msg)
+                                success = send_line_messaging_api(channel_access_token, my_user_id, msg)
+                                
+                                # 3. 推播成功後將網址記錄到「已發送表」，避免下次重複推播
+                                if success:
+                                    conn.execute("INSERT OR IGNORE INTO sent_notifications (link) VALUES (?)", (link_raw,))
+                                    conn.commit()
     except Exception:
         pass
 
@@ -610,7 +626,7 @@ elif current == "📊 數據統計分析":
     st.title("📊 全球新聞數據統計分析")
     df_all = query_all_data()
     if df_all.empty:
-        st.warning("資料庫內暫無數據可供分析。")
+        st.warning("資料庫內暫無數據可供 analysis。")
     else:
         col_f1, col_f2 = st.columns([1, 1])
         
