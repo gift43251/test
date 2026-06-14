@@ -1,5 +1,5 @@
 feedparser
-deep-translator
+deep_translator
 streamlit
 requests
 textblob
@@ -8,6 +8,9 @@ transformers
 torch
 geopy
 streamlit-folium
+folium
 apscheduler
 plotly
 line-bot-sdk
+scikit-learn
+sentencepiece
