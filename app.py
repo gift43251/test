@@ -10,16 +10,60 @@ from datetime import datetime, timedelta
 import plotly.express as px
 import re
 import random
-from collections import Counter
-from transformers import pipeline  # 引入 AI 語意仲裁所需套件
-import folium
-from folium.plugins import MarkerCluster
-import streamlit.components.v1 as components
+from geopy.geocoders import Nominatim
+from functools import lru_cache
+import requests
 
-# --- 1. 全域配置與資料庫設定 ---
+# --- 1. 登入驗證模組 (寫死帳密) ---
+def check_password():
+    """傳回 True 代表使用者通過驗證，否則為 False"""
+    def password_entered():
+        """檢查輸入的帳號密碼是否正確"""
+        if (
+            st.session_state["username_input"] == "tester1"
+            and st.session_state["password_input"] == "donoterror"
+        ):
+            st.session_state["password_correct"] = True
+            st.session_state["username"] = st.session_state["username_input"]
+            del st.session_state["password_input"]  # 清除暫存密碼安全
+            del st.session_state["username_input"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # 顯示登入表單
+        st.title("🔐 全球新聞監控中心 - 系統登入")
+        st.text_input("帳號 (Username)", key="username_input")
+        st.text_input("密碼 (Password)", type="password", key="password_input", on_change=password_entered)
+        if st.button("登入"):
+            password_entered()
+            st.rerun()
+        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+            st.error("❌ 帳號或密碼錯誤，請重新輸入！")
+        return False
+    elif not st.session_state["password_correct"]:
+        # 密碼錯誤重新顯示表單
+        st.title("🔐 全球新聞監控中心 - 系統登入")
+        st.text_input("帳號 (Username)", key="username_input")
+        st.text_input("密碼 (Password)", type="password", key="password_input", on_change=password_entered)
+        if st.button("登入"):
+            password_entered()
+            st.rerun()
+        st.error("❌ 帳號或密碼錯誤，請重新輸入！")
+        return False
+    else:
+        # 通過驗證
+        return True
+
+# 執行驗證，若未通過則中斷後續程式渲染
+if not check_password():
+    st.stop()
+
+
+# --- 2. 全域配置與資料庫設定 ---
 st.set_page_config(page_title="全球新聞智慧監控中心", layout="wide")
 
-DB_NAME = 'news_monitor_v9.db'
+DB_NAME = 'news_monitor_v15.db' 
 
 NEWS_SOURCES = [
     {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml"},
@@ -29,102 +73,136 @@ NEWS_SOURCES = [
     {"name": "UDN 聯合國際", "url": "https://udn.com/rssnews/news/1013/7225?ch=udnnews"}
 ]
 
-# 關鍵字詞庫
 DEFAULT_CATEGORIES = {
-    "軍事政治": ["military", "war", "russia", "israel", "defense", "election", "ukraine", "conflict", "sanctions", "die", "arrest", "retrial", "airstrike", "biden", "combat", "tactic", "ally", "ceasefire", "invasion", "refugee", "戰爭", "選舉", "軍事", "政治", "衝突", "烏克蘭", "俄羅斯", "以色列"],
-    "經濟": ["economy", "inflation", "gdp", "fed", "rate", "finance", "降息", "通膨", "股市", "經濟", "財經"],
-    "科技": ["tech", "semiconductor", "apple", "google", "gpu", "tsmc", "台積電", "晶片", "科技", "人工智慧"],
-    "體育": ["sport", "nba", "fifa", "olympics", "football", "tennis", "rookie", "mvp", "veteran", "blowout", "comeback", "upside", "momentum", "athletics", "blank", "edge", "運動", "籃球", "奧運", "體育"],
-    "民生健康": ["health", "virus", "climate", "food", "medicine", "symptoms", "chronic", "acute", "diagnosis", "side effects", "immunity", "metabolism", "nutrient", "diet", "sedentary", "cancer", "flu", "hypertension", "diabetes", "病毒", "氣候", "醫療", "健康", "民生"]
+    "軍事政治": ["military", "war", "russia", "israel", "defense", "election", "ukraine", "conflict", "sanctions", "die", "arrest", "retrial", "airstrike", "biden", "combat", "tactic", "ally", "ceasefire", "invasion", "refugee", "drone", "iran", "kuwait", "戰爭", "選舉", "軍事", "政治", "衝突", "烏克蘭", "俄羅斯", "以色列", "無人機", "襲擊", "科威特", "伊朗", "逮捕"],
+    "經濟": ["economy", "inflation", "gdp", "fed", "rate", "finance", "market", "降息", "通膨", "股市", "經濟", "財經", "投資", "交易"],
+    "科技": ["tech", "semiconductor", "apple", "google", "gpu", "tsmc", "nasa", "moon", "space", "astronaut", "台積電", "晶片", "科技", "人工智慧", "太空", "登月", "太空人", "電動車"],
+    "體育": ["sport", "nba", "fifa", "olympics", "football", "tennis", "rookie", "mvp", "運動", "籃球", "奧運", "體育"],
+    "民生健康": ["health", "virus", "climate", "food", "medicine", "symptoms", "desert", "stranded", "病毒", "氣候", "醫療", "健康", "民生", "拋錨", "高溫", "沙漠"]
 }
 
 CATEGORY_THEMES = {
-    "經濟": {"emoji": "🔵", "label": "【經濟財經】", "color": "blue"},
-    "科技": {"emoji": "🟢", "label": "【科技創新】", "color": "green"},
-    "體育": {"emoji": "🟠", "label": "【體育運動】", "color": "orange"},
-    "軍事政治": {"emoji": "🔴", "label": "【軍事政治】", "color": "red"},
-    "民生健康": {"emoji": "🟣", "label": "【民生健康】", "color": "purple"},
-    "一般國際": {"emoji": "⚪", "label": "【一般國際】", "color": "gray"}
+    "經濟": {"emoji": "🔵", "label": "【經濟財經】"},
+    "科技": {"emoji": "🟢", "label": "【科技創新】"},
+    "體育": {"emoji": "🟠", "label": "【體育運動】"},
+    "軍事政治": {"emoji": "🔴", "label": "【軍事政治】"},
+    "民生健康": {"emoji": "🟣", "label": "【民生健康】"},
+    "一般國際": {"emoji": "⚪", "label": "【一般國際】"}
 }
 
-# 國家精確基準經緯度
 COUNTRY_COORDS = {
-    "美國": [37.0902, -95.7129], "中國": [35.8617, 104.1954], "英國": [55.3781, -3.4360],
-    "台灣": [23.6978, 120.9605], "烏克蘭": [48.3794, 31.1656], "中東": [32.4279, 53.6880],
-    "日本": [36.2048, 138.2529], "歐洲": [48.6909, 9.1406], "全球": [20.0, 0.0]
+    "美國大區": [37.0902, -95.7129], 
+    "中國大區": [35.8617, 104.1954], 
+    "英國大區": [55.3781, -3.4360],
+    "台灣大區": [23.6978, 120.9605], 
+    "烏克蘭大區": [48.3794, 31.1656], 
+    "中東大區": [29.3117, 47.4818], 
+    "日本大區": [36.2048, 138.2529], 
+    "歐洲大區": [46.2276, 2.2137], 
+    "俄羅斯大區": [55.7558, 37.6173],
+    "非洲大區": [9.0820, 8.6753] 
 }
 
-# --- 2. 強效雙閘門混血分類器 ---
-CRISIS_STRONG_WORDS = [
-    "襲擊", "無人機", "轟炸", "導彈", "開火", "進攻", "突襲", "交火", "戰機", "軍事演習",
-    "劫持", "人質", "擊斃", "槍擊", "逮捕", "爆炸", "恐怖襲擊", "死亡", "死傷", "炸彈",
-    "combat", "drone", "attack", "missile", "hostage", "shot dead", "hijack", "explode", "bomb"
-]
+DETAILED_LOCS = {
+    "科威特": [29.3759, 47.9774], "伊朗": [32.4279, 53.6880], "以色列": [31.0461, 34.8516], 
+    "加薩": [31.5000, 34.4667], "巴勒斯坦": [31.9522, 35.2332], "耶路撒冷": [31.7683, 35.2137],
+    "撒哈拉": [20.0000, 10.0000], "紐約": [40.7128, -74.0060], "華盛頓": [38.9072, -77.0369],
+    "莫斯科": [55.7558, 37.6173], "基輔": [50.4501, 30.5234], "東京": [35.6762, 139.6503],
+    "台北": [25.0330, 121.5654], "台積電": [24.7820, 120.9950]
+}
 
-@st.cache_resource
-def load_classifier():
+geolocator = Nominatim(user_agent="news_monitor_geo_v15_turbo")
+
+# --- 3. LINE 官方帳號 Messaging API 推送函式 ---
+def send_line_push_notification(title, category, source, link):
+    """使用 LINE Messaging API 推送最新新聞給指定用戶"""
     try:
-        return pipeline("zero-shot-classification", model="vicgalle/xlm-roberta-large-xnli-anli")
-    except:
-        return None
+        # 從 Streamlit secrets 讀取金鑰，避免代碼在 GitHub 外洩
+        LINE_ACCESS_TOKEN = st.secrets["LINE_CHANNEL_ACCESS_TOKEN"]
+        LINE_USER_ID = st.secrets["LINE_USER_ID"]
+        
+        url = "https://api.line.me/v2/bot/message/push"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LINE_ACCESS_TOKEN}"
+        }
+        
+        # 封裝官方帳號的推播訊息格式 (Text message)
+        theme = CATEGORY_THEMES.get(category, CATEGORY_THEMES["一般國際"])
+        message_text = (
+            f"🔔【全球新聞智慧監控 - 新聞推送】\n\n"
+            f"📌 分類：{theme['emoji']} {category}\n"
+            f"📡 來源：{source}\n"
+            f"📝 標題：{title}\n\n"
+            f"🔗 原文連結：{link}"
+        )
+        
+        payload = {
+            "to": LINE_USER_ID,
+            "messages": [
+                {
+                    "type": "text",
+                    "text": message_text
+                }
+            ]
+        }
+        
+        response = requests.post(url, headers=headers, json=payload)
+        return response.status_code == 200
+    except Exception as e:
+        print(f"LINE 推送失敗: {e}")
+        return False
 
 def hybrid_news_classifier(title_zh, title_en):
     match_text = (title_en + " " + title_zh).lower()
-    clf = load_classifier()
-
-    has_crisis = any(sw in match_text for sw in CRISIS_STRONG_WORDS)
-    if has_crisis and clf is not None:
-        return call_ai_arbitrator(title_zh, clf)
-
     scores = {k: 0 for k in DEFAULT_CATEGORIES.keys()}
     for cat, keywords in DEFAULT_CATEGORIES.items():
         for word in keywords:
-            if word.lower() in match_text:
+            if word.lower() in match_text: 
                 scores[cat] += match_text.count(word.lower())
+    max_cat = max(scores, key=scores.get)
+    return max_cat if scores[max_cat] > 0 else "一般國際"
 
-    max_keyword_cat = max(scores, key=scores.get)
-    max_keyword_score = scores[max_keyword_cat]
+@lru_cache(maxsize=1024)
+def get_precise_coords(title_zh, title_en):
+    match_text = (title_zh + " " + title_en).lower()
+    
+    for loc_name, coords in DETAILED_LOCS.items():
+        if loc_name in title_zh or loc_name.lower() in match_text:
+            return coords[0] + random.uniform(-0.1, 0.1), coords[1] + random.uniform(-0.1, 0.1), loc_name
 
-    if max_keyword_score == 0:
-        if clf is not None:
-            return call_ai_arbitrator(title_zh, clf)
-        return "一般國際"
+    if any(k in match_text for k in ["伊朗", "科威特", "kuwait", "iran", "中東", "以色列", "加薩"]):
+        base_lat, base_lon = COUNTRY_COORDS["中東大區"]
+        return base_lat + random.uniform(-1.0, 1.0), base_lon + random.uniform(-1.0, 1.0), "中東區域"
+    elif any(k in match_text for k in ["nasa", "美國", "紐約", "華盛頓", "川普", "拜登", "biden", "trump"]):
+        base_lat, base_lon = COUNTRY_COORDS["美國大區"]
+        return base_lat + random.uniform(-1.5, 1.5), base_lon + random.uniform(-1.5, 1.5), "美國區域"
+    elif any(k in match_text for k in ["撒哈拉", "sahara", "非洲", "沙漠"]):
+        base_lat, base_lon = COUNTRY_COORDS["非洲大區"]
+        return base_lat + random.uniform(-2.0, 2.0), base_lon + random.uniform(-2.0, 2.0), "非洲區域"
+    elif any(k in match_text for k in ["俄羅斯", "莫斯科", "普丁", "russia"]):
+        base_lat, base_lon = COUNTRY_COORDS["俄羅斯大區"]
+        return base_lat + random.uniform(-1.0, 1.0), base_lon + random.uniform(-1.0, 1.0), "俄羅斯區域"
+    elif any(k in match_text for k in ["日本", "東京", "電動車", "tokyo"]):
+        base_lat, base_lon = COUNTRY_COORDS["日本大區"]
+        return base_lat + random.uniform(-0.5, 0.5), base_lon + random.uniform(-0.5, 0.5), "日本區域"
 
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    if len(sorted_scores) > 1 and (sorted_scores[0][1] - sorted_scores[1][1]) <= 1:
-        if clf is not None:
-            return call_ai_arbitrator(title_zh, clf)
-
-    return max_keyword_cat
-
-def call_ai_arbitrator(title_zh, clf):
     try:
-        candidate_labels = [
-            "military and geopolitics conflict",
-            "economy and finance market",
-            "technology and science innovations",
-            "sports news",
-            "health and lifestyle medicine",
-            "general international news"
-        ]
-        result = clf(title_zh, candidate_labels)
-        top_label = result['labels'][0]
+        geo_pattern = re.search(r'(在|於|往|在)([高屏台新北烏俄美英日中加巴克法德意伊科朝韓]{2,6})(市|省|縣|國|島)?', title_zh)
+        if geo_pattern:
+            extracted_loc = geo_pattern.group(2)
+            location = geolocator.geocode(extracted_loc, timeout=0.4)
+            if location:
+                return location.latitude, location.longitude, extracted_loc
+    except: pass
 
-        mapping = {
-            "military and geopolitics conflict": "軍事政治",
-            "economy and finance market": "經濟",
-            "technology and science innovations": "科技",
-            "sports news": "體育",
-            "health and lifestyle medicine": "民生健康",
-            "general international news": "一般國際"
-        }
-        return mapping.get(top_label, "一般國際")
-    except:
-        return "一般國際"
-
+    global_keys = list(COUNTRY_COORDS.keys())
+    chosen_zone = random.choice(global_keys)
+    base_lat, base_lon = COUNTRY_COORDS[chosen_zone]
+    return base_lat + random.uniform(-3.0, 3.0), base_lon + random.uniform(-3.0, 3.0), "全球焦點區域"
 
 def get_db_connection():
-    return sqlite3.connect(DB_NAME, check_same_thread=False, timeout=20)
+    return sqlite3.connect(DB_NAME, check_same_thread=False, timeout=15)
 
 def init_db():
     with get_db_connection() as conn:
@@ -132,14 +210,10 @@ def init_db():
         c.execute('''CREATE TABLE IF NOT EXISTS monitor_logs
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
                       title_zh TEXT, category TEXT, source TEXT, time TEXT,
-                      link TEXT UNIQUE, sentiment REAL, country TEXT, lat REAL, lon REAL)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS user_tags
-                     (username TEXT PRIMARY KEY, tags TEXT)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS push_settings
-                     (id INTEGER PRIMARY KEY, line_token TEXT, keywords TEXT)''')
+                      link TEXT UNIQUE, sentiment REAL, country TEXT, lat REAL, lon REAL, is_video INTEGER DEFAULT 0)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS user_tags (username TEXT PRIMARY KEY, tags TEXT)''')
         conn.commit()
 
-# --- 3. 數據抓取與清洗 ---
 def fetch_all_news():
     translator = GoogleTranslator(source='auto', target='zh-TW')
     with get_db_connection() as conn:
@@ -147,15 +221,16 @@ def fetch_all_news():
         for src in NEWS_SOURCES:
             try:
                 feed = feedparser.parse(src["url"])
-                for entry in feed.entries[:12]:
-                    if "error 500" in entry.title.lower() or "server error" in entry.title.lower():
-                        continue
-
+                for entry in feed.entries[:5]: 
                     c.execute("SELECT id FROM monitor_logs WHERE link=?", (entry.link,))
                     if not c.fetchone():
-                        is_chinese = any('\u4e00' <= char <= '\u9fff' for char in entry.title)
+                        link_lower = entry.link.lower()
+                        title_lower = entry.title.lower()
+                        
+                        is_video = 1 if any(k in link_lower or k in title_lower for k in ["video", "/av/", "play", "影音", "🎥"]) else 0
                         sentiment_score = TextBlob(entry.title).sentiment.polarity
 
+                        is_chinese = any('\u4e00' <= char <= '\u9fff' for char in entry.title)
                         if is_chinese:
                             title_zh = entry.title
                             title_en = ""
@@ -165,183 +240,80 @@ def fetch_all_news():
                             except: title_zh = entry.title
 
                         cat = hybrid_news_classifier(title_zh, title_en)
-
-                        t_lower, z_lower = title_en.lower(), title_zh.lower()
-                        target_country = "全球"
-
-                        if "美國" in z_lower or "川普" in z_lower or "白宮" in z_lower or re.search(r'\btrump\b|\bamerica\b|\bwashington\b|\bwhite\s+house\b|\busa\b', t_lower): target_country = "美國"
-                        elif "台灣" in z_lower or "台積電" in z_lower or re.search(r'\btaiwan\b', t_lower): target_country = "台灣"
-                        elif "烏克蘭" in z_lower or re.search(r'\bukraine\b', t_lower): target_country = "烏克蘭"
-                        elif "中國" in z_lower or re.search(r'\bchina\b', t_lower): target_country = "中國"
-                        elif "英國" in z_lower or re.search(r'\buk\b|\bbritain\b|\blondon\b', t_lower): target_country = "英國"
-                        elif "日本" in z_lower or re.search(r'\bjapan\b', t_lower): target_country = "日本"
-                        elif "中東" in z_lower or "以色列" in z_lower or "加薩" in z_lower or re.search(r'\bisrael\b|\bgaza\b', t_lower): target_country = "中東"
-                        elif "歐洲" in z_lower or re.search(r'\beurope\b', t_lower): target_country = "歐洲"
-                        elif re.search(r'\bus\b', t_lower): target_country = "美國"
-
-                        # 讀取對應國家的固定基礎座標（不再加入隨機抖動抖動震盪）
-                        base_lat, base_lon = COUNTRY_COORDS[target_country]
-
+                        exact_lat, exact_lon, final_location = get_precise_coords(title_zh, title_en)
                         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        
                         c.execute('''INSERT INTO monitor_logs
-                                     (title_zh, category, source, time, link, sentiment, country, lat, lon)
-                                     VALUES (?,?,?,?,?,?,?,?,?)''',
-                                  (title_zh, cat, src["name"], now, entry.link, sentiment_score, target_country, base_lat, base_lon))
-            except:
-                pass
+                                     (title_zh, category, source, time, link, sentiment, country, lat, lon, is_video)
+                                     VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                                  (title_zh, cat, src["name"], now, entry.link, sentiment_score, final_location, exact_lat, exact_lon, is_video))
+                        
+                        # 新聞寫入資料庫成功的同時，觸發 LINE 官方帳號 Messaging API 推送
+                        send_line_push_notification(title_zh, cat, src["name"], entry.link)
+                        
+            except: pass
         conn.commit()
 
-def monitor_loop():
-    time.sleep(5)
-    while True:
-        try: fetch_all_news()
-        except: pass
-        time.sleep(300)
+def reset_database():
+    with get_db_connection() as conn:
+        conn.execute("DROP TABLE IF EXISTS monitor_logs")
+    init_db()
 
-init_db()
 if 'monitor_started' not in st.session_state:
-    with st.spinner("智慧監控中心初始化，正在跨國同步最新全球焦點..."):
+    with st.spinner("極速多陸地地理引擎配置中..."):
+        init_db()
         fetch_all_news()
-    threading.Thread(target=monitor_loop, daemon=True).start()
     st.session_state['monitor_started'] = True
 
 # --- 4. 狀態快取與控制 ---
-if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
-if 'username' not in st.session_state: st.session_state['username'] = ""
-if 'is_guest' not in st.session_state: st.session_state['is_guest'] = False
 if 'current_view' not in st.session_state: st.session_state['current_view'] = "🏠 首頁總覽"
 
 def load_all_data():
     with get_db_connection() as conn:
         df = pd.read_sql_query("SELECT * FROM monitor_logs ORDER BY time DESC", conn)
-        if not df.empty:
-            df['time_dt'] = pd.to_datetime(df['time'])
+        if not df.empty: df['time_dt'] = pd.to_datetime(df['time'])
         return df
 
 df_all = load_all_data()
+df_text_only = df_all[df_all['is_video'] == 0] if not df_all.empty else df_all
+df_videos_only = df_all[df_all['is_video'] == 1] if not df_all.empty else df_all
 
-def get_recent_hour_data(df):
-    if df.empty: return df
-    one_hour_ago = datetime.now() - timedelta(hours=1)
-    return df[df['time_dt'] >= one_hour_ago]
-
-df_recent = get_recent_hour_data(df_all)
-
-def get_user_tags(username):
-    if st.session_state['is_guest'] and 'guest_tags' in st.session_state:
-        return st.session_state['guest_tags']
-    with get_db_connection() as conn:
-        res = conn.execute("SELECT tags FROM user_tags WHERE username=?", (username,)).fetchone()
-        return res[0].split(",") if res and res[0] else list(DEFAULT_CATEGORIES.keys()) + ["一般國際"]
-
-def save_user_tags(username, tags):
-    with get_db_connection() as conn:
-        conn.execute("INSERT OR REPLACE INTO user_tags (username, tags) VALUES (?, ?)", (username, ",".join(tags)))
-        conn.commit()
-
-# --- 5. 登入管制牆 ---
-if not st.session_state['logged_in'] and not st.session_state['is_guest']:
-    st.title("全球新聞智能監控系統")
-    st.subheader("請選擇進入模式以開啟個性化儀表板")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        with st.container(border=True):
-            st.markdown("### 🔑 會員/自訂用戶登入")
-            username_input = st.text_input("使用者名稱", placeholder="請輸入使用者名稱", key="login_user")
-            password_input = st.text_input("密碼", type="password", placeholder="******", key="login_pwd")
-            
-            if st.button("進入會員系統", use_container_width=True, key="btn_member_login"):
-                if username_input.strip() == "tester1" and password_input == "donoterror":
-                    st.session_state['logged_in'] = True
-                    st.session_state['is_guest'] = False
-                    st.session_state['username'] = username_input.strip()
-                    st.success("登入成功！正在跳轉...")
-                    st.rerun()
-                else:
-                    st.error("❌ 帳號或密碼錯誤，請重新輸入！")
-                        
-    with col2:
-        with st.container(border=True):
-            st.markdown("### 🌐 訪客快捷通道")
-            st.write("免帳號密碼快捷登入，即刻查看全球一小時內最新事件地圖。")
-            if st.button("🚀 以訪客身份免登入進入", use_container_width=True, type="primary", key="btn_guest_login"):
-                st.session_state['is_guest'] = True
-                st.session_state['logged_in'] = False
-                st.session_state['username'] = "訪客模式 Guest"
-                st.session_state['guest_tags'] = list(DEFAULT_CATEGORIES.keys()) + ["一般國際"]
-                st.rerun()
-    st.stop()
-
-# --- 6. 側邊欄分類複選勾選面板 ---
+# --- 5. 側邊欄與功能面板介面優化 ---
 st.sidebar.title(f"👤 {st.session_state['username']}")
-
-if st.sidebar.button("🔄 手動同步最新新聞", key="side_sync_btn"):
-    with st.spinner("正在重新爬取各國新聞..."):
+if st.sidebar.button("🔄 5秒極速重組與同步新聞", key="side_sync_btn"):
+    with st.spinner("清空舊數據，5秒內重新極速同步中..."):
+        reset_database()
         fetch_all_news()
     st.rerun()
 
 st.sidebar.write("---")
 all_available_tags = list(DEFAULT_CATEGORIES.keys()) + ["一般國際"]
-saved_tags = get_user_tags(st.session_state['username'])
-
-selected_tags = []
 for tag in all_available_tags:
-    is_checked = tag in saved_tags
-    if st.sidebar.checkbox(f"🔖 {tag}", value=is_checked, key=f"sidebar_fixed_cb_{tag}"):
-        selected_tags.append(tag)
+    st.sidebar.checkbox(f"🔖 {tag}", value=True, key=f"sidebar_fixed_cb_{tag}")
 
-if st.session_state['is_guest']:
-    st.session_state['guest_tags'] = selected_tags
-else:
-    if st.sidebar.button("💾 儲存我的勾選設定", key="side_save_btn"):
-        save_user_tags(st.session_state['username'], selected_tags)
-        st.sidebar.success("訂閱設定已同步！")
-        st.rerun()
-
-if st.sidebar.button("🚪 登出/切換模式", key="side_logout_btn"):
-    st.session_state['logged_in'] = False
-    st.session_state['is_guest'] = False
-    st.rerun()
-
-# --- 7. 頂部大選單導覽列 ---
 st.write("### 🧭 系統主功能面板")
-
-base_menu = ["🏠 首頁總覽", "⏳ 歷史總時間軸", "📊 數據統計分析", "🔍 關鍵字搜尋"]
-if not st.session_state['is_guest']:
-    base_menu.append("📢 LINE通知設定")
-
+base_menu = ["🏠 首頁總覽", "📺 影音新聞特區", "⏳ 歷史總時間軸", "📊 數據統計分析", "🔍 關鍵字搜尋"]
 cols_row1 = st.columns(len(base_menu))
 for idx, item_name in enumerate(base_menu):
-    if cols_row1[idx].button(item_name, use_container_width=True, key=f"nav_row1_{idx}"):
+    if cols_row1[idx].button(item_name, width='stretch', key=f"nav_row1_{idx}"):
         st.session_state['current_view'] = item_name
 
 st.write("### 🔖 訂閱新聞分類頻道")
-category_menu = [f"🔖 {t}" for t in selected_tags]
-
-if category_menu:
-    cols_row2 = st.columns(len(category_menu))
-    for idx, item_name in enumerate(category_menu):
-        if cols_row2[idx].button(item_name, use_container_width=True, key=f"nav_row2_{idx}"):
-            st.session_state['current_view'] = item_name
-
+cols_row2 = st.columns(len(all_available_tags))
+for idx, item_name in enumerate(all_available_tags):
+    if cols_row2[idx].button(f"🔖 {item_name}", width='stretch', key=f"nav_row2_{idx}"):
+        st.session_state['current_view'] = f"🔖 {item_name}"
 st.write("---")
 
-# --- 8. 新聞卡片元件 ---
+# --- 6. 新聞卡片元件 ---
 def render_native_news_cards(df_target):
     if df_target.empty:
         st.info("💡 該時段或分類目前暫無新聞條目。")
         return
-
-    core_categories = ["軍事政治", "經濟", "科技", "體育", "民生健康", "一般國際"]
-    nav_options = ["請選擇要移動至的分頁..."] + [f"🔖 {c}" for c in core_categories]
-
     for idx, row in df_target.iterrows():
         cat = row['category']
-        news_id = row['id']
         theme = CATEGORY_THEMES.get(cat, CATEGORY_THEMES["一般國際"])
         sentiment_text = "正面" if row['sentiment'] > 0.05 else ("負面" if row['sentiment'] < -0.05 else "中性")
-
         with st.container(border=True):
             col_meta, col_title, col_btn = st.columns([2.5, 7.0, 2.5])
             with col_meta:
@@ -349,135 +321,79 @@ def render_native_news_cards(df_target):
                 st.caption(f"📡 來源: `{row['source']}`")
             with col_title:
                 st.markdown(f"#### {row['title_zh']}")
-                st.markdown(f"⏱️ `發布時間: {row['time']}` &nbsp;|&nbsp; 📍 區域: **{row['country']}** &nbsp;|&nbsp; 📊 輿情: `{sentiment_text}`")
+                st.markdown(f"⏱️ `發布時間: {row['time']}` &nbsp;|&nbsp; 📍 解析區域: **{row['country']}** &nbsp;|&nbsp; 📊 輿情: `{sentiment_text}`")
             with col_btn:
-                st.link_button("🔗 前往原文", row['link'], use_container_width=True, key=f"lnk_{idx}_{news_id}")
-                st.write("")
+                html_link = f'<a href="{row["link"]}" target="_blank"><button style="width:100%; padding:8px; background-color:#ffffff; border:1px solid #dcdcdc; border-radius:4px; cursor:pointer; font-weight:bold; color:#31333F;">🔗 前往原文</button></a>'
+                st.markdown(html_link, unsafe_allow_html=True)
 
-                selected_nav = st.selectbox(
-                    "移動至 👇",
-                    options=nav_options,
-                    index=0,
-                    key=f"move_sel_{idx}_{news_id}",
-                    label_visibility="collapsed"
-                )
-
-                if selected_nav != "請選擇要移動至的分頁...":
-                    new_category = selected_nav.replace("🔖 ", "")
-                    with get_db_connection() as conn:
-                        conn.execute("UPDATE monitor_logs SET category = ? WHERE id = ?", (new_category, news_id))
-                        conn.commit()
-                    st.session_state['current_view'] = selected_nav
-                    st.rerun()
-
-# --- 9. 各分頁路由渲染邏輯 ---
-
-# A. 首頁總覽
+# --- 7. 路由視圖渲染 ---
 if st.session_state['current_view'] == "🏠 首頁總覽":
-    st.title("🗺️ Leaflet 高階全域互動式焦點地圖")
-
-    if not df_recent.empty:
-        df_map_filtered = df_recent[
-            (df_recent['category'] != "影音新聞") &
-            (df_recent['lat'].notna()) &
-            (df_recent['lon'].notna())
-        ]
+    st.title("🗺️ 全球即時新聞事件精準地圖")
+    if df_all.empty: 
+        st.warning("⏱️ 資料庫目前暫無數據，請點擊左側同步。")
     else:
-        df_map_filtered = pd.DataFrame()
+        fig_map = px.scatter_geo(df_all, lat='lat', lon='lon', hover_name='title_zh', 
+                                 hover_data={'source': True, 'time': True, 'category': True, 'country': True, 'lat': False, 'lon': False}, 
+                                 projection="equirectangular", title="全球最新焦點事件精確分佈圖", color_discrete_sequence=["#ff4b4b"])
+        fig_map.update_geos(showcountries=True, countrycolor="lightgray", showcoastlines=True, visible=True)
+        fig_map.update_traces(marker=dict(size=11, opacity=0.85))
+        fig_map.update_layout(height=600, margin={"r":0,"t":40,"l":0,"b":0})
+        st.plotly_chart(fig_map, use_container_width=True, key="main_live_map")
+        
+        st.write("### 🔔 最新發布新聞動態")
+        render_native_news_cards(df_all)
 
-    if df_map_filtered.empty:
-        st.warning("⏱️ 最近 1 小時內國際新聞台暫無具備精確定位的新聞事件。")
+elif st.session_state['current_view'] == "📺 影音新聞特區":
+    st.title("📺 全球即時影音新聞快報牆")
+    if df_videos_only.empty:
+        st.info("💡 目前資料庫尚未擷取到影音新聞。")
     else:
-        m = folium.Map(location=[25.0, 10.0], zoom_start=2, tiles="OpenStreetMap")
-        marker_cluster = MarkerCluster().add_to(m)
+        for idx, row in df_videos_only.iterrows():
+            with st.container(border=True):
+                col_title, col_btn = st.columns([9.0, 3.0])
+                with col_title:
+                    st.markdown(f"### 🎥 {row['title_zh']}")
+                    st.caption(f"📡 來源: **{row['source']}** &nbsp;|&nbsp; ⏱️ 時間: `{row['time']}` &nbsp;|&nbsp; 📍 區域: **{row['country']}**")
+                with col_btn:
+                    button_html = f"""
+                    <div style="padding-top: 10px;">
+                        <a href="{row['link']}" target="_blank" style="text-decoration: none;">
+                            <button style="
+                                width: 100%;
+                                background-color: #FF4B4B;
+                                color: white;
+                                padding: 10px;
+                                border: none;
+                                border-radius: 6px;
+                                font-weight: bold;
+                                cursor: pointer;
+                                text-align: center;
+                            ">
+                                🔗 前往影音原文
+                            </button>
+                        </a>
+                    </div>
+                    """
+                    st.markdown(button_html, unsafe_allow_html=True)
 
-        for idx, row in df_map_filtered.iterrows():
-            theme = CATEGORY_THEMES.get(row['category'], CATEGORY_THEMES["一般國際"])
-
-            popup_html = f"""
-            <div style="font-family: Arial, sans-serif; width: 260px; font-size: 13px; line-height: 1.4;">
-                <b style="color: #ff4b4b; font-size: 14px;">{theme['emoji']} {row['category']}</b><br>
-                <p style="margin: 5px 0; font-weight: bold; color: #333;">{row['title_zh']}</p>
-                <hr style="margin: 5px 0; border: 0; border-top: 1px solid #ccc;">
-                <small>📡 來源: {row['source']}</small><br>
-                <small>⏱️ 時間: {row['time']}</small><br><br>
-                <a href="{row['link']}" target="_blank" style="display: inline-block; background-color: #ff4b4b; color: white; padding: 5px 10px; text-decoration: none; border-radius: 4px; font-weight: bold; text-align: center; width: 90%;">前往新聞原文 🔗</a>
-            </div>
-            """
-
-            folium.Marker(
-                location=[row['lat'], row['lon']],
-                popup=folium.Popup(popup_html, max_width=300),
-                tooltip=row['title_zh'][:20] + "...",
-                icon=folium.Icon(color=theme['color'], icon="info-sign")
-            ).add_to(marker_cluster)
-
-        map_html = m._repr_html_()
-        components.html(map_html, height=650, scrolling=True)
-
-    st.write("---")
-    st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
-    render_native_news_cards(df_recent[df_recent['category'] != "影音新聞"])
-
-# B. ⏳ 歷史總時間軸
 elif st.session_state['current_view'] == "⏳ 歷史總時間軸":
     st.title("⏳ 全球歷史即時總時間軸")
-    render_native_news_cards(df_all)
+    render_native_news_cards(df_text_only)
 
-# C. 📊 數據統計分析
 elif st.session_state['current_view'] == "📊 數據統計分析":
     st.title("📊 全球新聞數據統計分析")
-    if df_all.empty:
-        st.warning("資料庫內暫無數據可供分析。")
+    if df_all.empty: st.warning("資料庫內暫無數據。")
     else:
-        col_f1, col_f2 = st.columns([1, 1])
-        with col_f1:
-            st.write("### 📈 新聞動態抓取走勢線")
-            df_trend = df_all.copy()
-            df_trend['time_group'] = df_trend['time_dt'].dt.floor('10min').dt.strftime("%Y-%m-%d %H:%M")
-            time_trend = df_trend.groupby(['time_group', 'category']).size().reset_index(name='新聞數量')
-            time_trend = time_trend.sort_values(by='time_group')
-            fig_line = px.line(time_trend, x="time_group", y="新聞數量", color="category", title="趨勢走勢線", markers=True)
-            st.plotly_chart(fig_line, use_container_width=True, key="stat_line_chart")
+        st.plotly_chart(px.histogram(df_all, x="category", title="各分類新聞總量分佈", color="category"), use_container_width=True)
 
-        with col_f2:
-            st.write("### ⏱️ 24小時新聞發布頻率線")
-            fig_hist = px.histogram(df_all, x="time_dt", color="category", nbins=24, title="24小時發布頻率直方圖")
-            st.plotly_chart(fig_hist, use_container_width=True, key="stat_hist_chart")
-
-# D. 🔍 關鍵字搜尋頁
 elif st.session_state['current_view'] == "🔍 關鍵字搜尋":
     st.title("🔍 全域新聞關鍵字檢索")
-    search_query = st.text_input("輸入要查詢的關鍵字：", placeholder="例如：台積電、晶片、戰爭", key="search_box_input")
+    search_query = st.text_input("輸入要查詢的關鍵字：", placeholder="例如：科威特、NASA")
     if search_query and not df_all.empty:
-        results = df_all[df_all['title_zh'].str.contains(search_query, na=False, case=False)]
-        st.write(f"共找到 {len(results)} 筆符合條件的條目：")
-        render_native_news_cards(results)
-    elif search_query:
-        st.info("目前尚無符合該關鍵字的新聞。")
+        render_native_news_cards(df_all[df_all['title_zh'].str.contains(search_query, na=False, case=False)])
 
-# E. 📢 LINE通知設定
-elif st.session_state['current_view'] == "📢 LINE通知設定":
-    st.title("📢 LINE Notify 智慧預警推送")
-    with get_db_connection() as conn:
-        curr_config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
-    display_token = curr_config[0] if curr_config else ""
-    display_keywords = curr_config[1] if curr_config else ""
-
-    with st.form("push_form_cfg"):
-        token_input = st.text_input("LINE Notify Token", value=display_token, type="password", key="line_tok_input")
-        kw_input = st.text_area("追蹤關鍵字 (英文逗號隔開)", value=display_keywords, key=f"line_kw_input")
-        if st.form_submit_button("儲存並開啟推播"):
-            with get_db_connection() as conn:
-                conn.execute("INSERT OR REPLACE INTO push_settings (id, line_token, keywords) VALUES (1, ?, ?)",
-                             (token_input, kw_input.replace("，", ",")))
-                conn.commit()
-            st.success("通知設定更新成功！")
-
-# F. 動態分類專屬獨立時間軸
 elif st.session_state['current_view'].startswith("🔖 "):
     target_tag = st.session_state['current_view'].replace("🔖 ", "")
     st.title(f"🔖 分類專屬獨立時間軸：{target_tag}")
-
-    tag_df = df_all[df_all['category'] == target_tag]
-    render_native_news_cards(tag_df)
+    if not df_all.empty:
+        render_native_news_cards(df_all[df_all['category'] == target_tag])
