@@ -20,8 +20,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # --- 1. 全域配置與資料庫設定 ---
 st.set_page_config(page_title="全球新聞智慧监控中心", layout="wide")
 
-# 更換資料庫名稱（v10），徹底刷洗掉原本存在資料庫裡的舊「非洲定位點」歷史紀錄
-DB_NAME = 'news_monitor_v10.db'
+# 更換資料庫名稱（v11），徹底刷洗掉舊資料
+DB_NAME = 'news_monitor_v11.db'
 
 NEWS_SOURCES = [
     {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml"},
@@ -48,7 +48,6 @@ CATEGORY_THEMES = {
     "一般國際": {"emoji": "⚪", "label": "【一般國際】", "color": "gray"}
 }
 
-# 地理座標擴充字典 (精確比對國家與50大城市，完全移除全球預設點)
 COUNTRY_COORDS = {
     # 主要國家
     "美國": [37.0902, -95.7129], "中國": [35.8617, 104.1954], "英國": [55.3781, -3.4360],
@@ -82,12 +81,6 @@ COUNTRY_COORDS = {
     "聖保羅": [-23.5505, -46.6333], "布宜諾斯艾利斯": [-34.6037, -58.3816], "墨西哥城": [19.4326, -99.1332]
 }
 
-CRISIS_STRONG_WORDS = [
-    "襲擊", "無人機", "轟炸", "導彈", "開火", "進攻", "突襲", "交火", "戰機", "軍事演習",
-    "劫持", "人質", "擊斃", "槍擊", "逮捕", "爆炸", "恐怖襲擊", "死亡", "死傷", "炸彈",
-    "combat", "drone", "attack", "missile", "hostage", "shot dead", "hijack", "explode", "bomb"
-]
-
 # --- 2. AI 分類器 ---
 @st.cache_resource(show_spinner=False)
 def load_classifier():
@@ -118,14 +111,11 @@ def call_ai_arbitrator(title_zh, clf):
     except Exception:
         return "一般國際"
 
+# 【核心改動】：限用關鍵字優先，無匹配才用 AI，皆無則歸入一般國際
 def hybrid_news_classifier(title_zh, title_en):
     match_text = (title_en + " " + title_zh).lower()
-    clf = load_classifier()
-
-    has_crisis = any(sw in match_text for sw in CRISIS_STRONG_WORDS)
-    if has_crisis and clf is not None:
-        return call_ai_arbitrator(title_zh, clf)
-
+    
+    # 步驟 1：先初始化各分類的關鍵字得分
     scores = {k: 0 for k in DEFAULT_CATEGORIES.keys()}
     for cat, keywords in DEFAULT_CATEGORIES.items():
         for word in keywords:
@@ -135,17 +125,17 @@ def hybrid_news_classifier(title_zh, title_en):
     max_keyword_cat = max(scores, key=scores.get)
     max_keyword_score = scores[max_keyword_cat]
 
-    if max_keyword_score == 0:
-        if clf is not None:
-            return call_ai_arbitrator(title_zh, clf)
-        return "一般國際"
+    # 步驟 2：如果有任一關鍵字匹配成功（分數 > 0），立刻採用，不驚動 AI 運算
+    if max_keyword_score > 0:
+        return max_keyword_cat
 
-    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    if len(sorted_scores) > 1 and (sorted_scores[0][1] - sorted_scores[1][1]) <= 1:
-        if clf is not None:
-            return call_ai_arbitrator(title_zh, clf)
-
-    return max_keyword_cat
+    # 步驟 3：如果關鍵字分數完全為 0，這時才調用 AI 分類器
+    clf = load_classifier()
+    if clf is not None:
+        return call_ai_arbitrator(title_zh, clf)
+        
+    # 步驟 4：若無關鍵字且連 AI 分類器都無法載入，最終放入一般國際
+    return "一般國際"
 
 # --- 3. 資料庫 ---
 def get_db_connection():
@@ -186,7 +176,6 @@ def send_line_messaging_api(channel_access_token, user_id, message_text):
 def _detect_country(t_lower, z_lower):
     target = None
     
-    # 1. 知名科技巨頭、核心機構與自訂熱門關鍵字（精準導引至母國）
     if "nvidia" in t_lower or "輝達" in z_lower or "nasa" in t_lower or "apple" in t_lower or "google" in t_lower or "openai" in t_lower or "microsoft" in t_lower or re.search(r'\bfed\b', t_lower) or "聯準會" in z_lower or "wall street" in t_lower or "華爾街" in z_lower:
         target = "美國"
     elif "tsmc" in t_lower or "台積電" in z_lower or "聯發科" in z_lower or "foxconn" in t_lower or "鴻海" in z_lower:
@@ -200,7 +189,6 @@ def _detect_country(t_lower, z_lower):
     elif "華為" in z_lower or "huawei" in t_lower or "byd" in t_lower or "比亞迪" in z_lower or "tencent" in t_lower or "騰訊" in z_lower or "alibaba" in t_lower or "阿里巴巴" in z_lower:
         target = "中國"
         
-    # 2. 50大國際核心城市精細判定
     elif "new york" in t_lower or "紐約" in z_lower: target = "紐約"
     elif "los angeles" in t_lower or "洛杉磯" in z_lower: target = "洛杉磯"
     elif "san francisco" in t_lower or "舊金山" in z_lower: target = "舊金山"
@@ -252,7 +240,6 @@ def _detect_country(t_lower, z_lower):
     elif "buenos aires" in t_lower or "布宜諾斯艾利斯" in z_lower: target = "布宜諾斯艾利斯"
     elif "mexico city" in t_lower or "墨西哥城" in z_lower: target = "墨西哥城"
 
-    # 3. 國家與主流區域層級比對（使用 \b 確保單字獨立，防止英文片語字母誤觸）
     elif "台灣" in z_lower or re.search(r'\btaiwan\b', t_lower): target = "台灣"
     elif "美國" in z_lower or "白宮" in z_lower or re.search(r'\bamerica\b|\bwhite\s+house\b|\busa\b|\bunited\s+states\b', t_lower): target = "美國"
     elif "烏克蘭" in z_lower or re.search(r'\bukraine\b', t_lower): target = "烏克蘭"
@@ -284,8 +271,6 @@ def _detect_country(t_lower, z_lower):
     elif "荷蘭" in z_lower or re.search(r'\bnetherlands\b', t_lower): target = "荷蘭"
     elif "歐洲" in z_lower or re.search(r'\beurope\b', t_lower): target = "歐洲"
 
-    # 【重要改動】如果完全比對不到設定的關鍵字城市或國家，回傳 None。
-    # 彻底杜绝任何「全球」標籤，也不會被預設分配到任何經緯度上。
     if target is None:
         return None, None, None
 
@@ -441,7 +426,7 @@ def save_user_tags(username, tags):
         conn.execute("INSERT OR REPLACE INTO user_tags (username, tags) VALUES (?, ?)", (username, ",".join(tags)))
         conn.commit()
 
-# --- 7. 初始化（異步背景初次爬取） ---
+# --- 7. 初始化 ---
 init_db()
 if 'monitor_started' not in st.session_state:
     start_scheduler()
@@ -576,7 +561,6 @@ if current == "🏠 首頁總覽":
     if df_recent.empty:
         st.warning("⏱️ 最近 1 小時內國際新聞台暫無新發布事件。")
     else:
-        # 【嚴格過濾邏輯】國家為 None 或是經緯度為空的欄位，保證 100% 絕對不畫到地圖上！
         df_map_ready = df_recent.dropna(subset=['country', 'lat', 'lon'])
         df_map_ready = df_map_ready[df_map_ready['country'] != 'None']
         
@@ -605,7 +589,7 @@ if current == "🏠 首頁總覽":
                 fill_opacity=0.7
             ).add_to(m)
 
-        st_folium(m, width="100%", height=600, key="main_live_map_folium_v10")
+        st_folium(m, width="100%", height=600, key="main_live_map_folium_v11")
         st.write("---")
         st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
         render_native_news_cards(df_recent)
