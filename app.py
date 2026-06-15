@@ -20,8 +20,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # --- 1. 全域配置與資料庫設定 ---
 st.set_page_config(page_title="全球新聞智慧监控中心", layout="wide")
 
-# 更換資料庫名稱（v11），徹底刷洗掉舊資料
-DB_NAME = 'news_monitor_v11.db'
+# 更換資料庫名稱（v12），徹底刷洗掉舊資料
+DB_NAME = 'news_monitor_v12.db'
 
 NEWS_SOURCES = [
     {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml"},
@@ -31,12 +31,54 @@ NEWS_SOURCES = [
     {"name": "UDN 聯合國際", "url": "https://udn.com/rssnews/news/1013/7225?ch=udnnews"}
 ]
 
+# 嚴格擴充：每類別達 50 個以上高頻中英文關鍵字
 DEFAULT_CATEGORIES = {
-    "軍事政治": ["military", "war", "russia", "israel", "defense", "election", "ukraine", "conflict", "sanctions", "die", "arrest", "retrial", "airstrike", "biden", "combat", "tactic", "ally", "ceasefire", "invasion", "refugee", "戰爭", "選舉", "軍事", "政治", "衝突", "烏克蘭", "俄羅斯", "以色列"],
-    "經濟": ["economy", "inflation", "gdp", "fed", "rate", "finance", "降息", "通膨", "股市", "經濟", "財經"],
-    "科技": ["tech", "semiconductor", "apple", "google", "gpu", "tsmc", "台積電", "晶片", "科技", "人工智慧", "nvidia", "輝達", "nasa"],
-    "體育": ["sport", "nba", "fifa", "olympics", "football", "tennis", "rookie", "mvp", "veteran", "blowout", "comeback", "upside", "momentum", "athletics", "blank", "edge", "運動", "籃球", "奧運", "體育"],
-    "民生健康": ["health", "virus", "climate", "food", "medicine", "symptoms", "chronic", "acute", "diagnosis", "side effects", "immunity", "metabolism", "nutrient", "diet", "sedentary", "cancer", "flu", "hypertension", "diabetes", "病毒", "氣候", "醫療", "健康", "民生"]
+    "軍事政治": [
+        "military", "war", "russia", "israel", "defense", "election", "ukraine", "conflict", "sanctions", "die", 
+        "arrest", "retrial", "airstrike", "biden", "combat", "tactic", "ally", "ceasefire", "invasion", "refugee",
+        "pentagon", "nato", "kremlin", "gaza", "hamas", "missile", "weapon", "army", "navy", "troops",
+        "protest", "parliament", "diplomat", "treaty", "minister", "president", "bureaucracy", "regime", "coup", "rebel",
+        "戰爭", "選舉", "軍事", "政治", "衝突", "烏克蘭", "俄羅斯", "以色列", "國防", "制裁", 
+        "空襲", "停火", "入侵", "難民", "五角大廈", "北約", "加薩", "哈瑪斯", "飛彈", "武器", 
+        "陸軍", "海軍", "空軍", "抗議", "國會", "外交", "條約", "總理", "總統", "政權", "政變", "叛軍"
+    ],
+    "經濟": [
+        "economy", "inflation", "gdp", "fed", "rate", "finance", "trade", "tariff", "recession", "currency",
+        "stock", "market", "nasdaq", "dow", "bitcoin", "crypto", "deficit", "subsidy", "export", "import",
+        "merger", "acquisition", "bankruptcy", "revenue", "profit", "fiscal", "imf", "banking", "bond", "commodity",
+        "降息", "通膨", "股市", "經濟", "財經", "貿易", "關稅", "衰退", "貨幣", "匯率", 
+        "納斯達克", "道瓊", "比特幣", "加密貨幣", "赤字", "補貼", "出口", "進口", "併購", "破產", 
+        "營收", "利潤", "財政", "國際貨幣基金", "銀行", "債券", "大宗商品", "升息", "微觀經濟", "宏觀經濟"
+    ],
+    "科技": [
+        "tech", "semiconductor", "apple", "google", "gpu", "tsmc", "nvidia", "nasa", "ai", "intelligence",
+        "chip", "microsoft", "amazon", "openai", "chatgpt", "software", "hardware", "quantum", "cyber", "security",
+        "hacker", "robot", "automation", "cloud", "telecom", "5g", "smartphone", "battery", "ev", "tesla",
+        "space", "satellite", "rocket", "algorithm", "database", "innovation", "patent", "metaverse", "biotech", "startup",
+        "晶片", "科技", "人工智慧", "輝達", "航太", "半導體", "蘋果", "谷歌", "微軟", "亞馬遜", 
+        "網頁", "軟體", "硬體", "量子", "網路安全", "駭客", "機器人", "自動化", "雲端", "電信", 
+        "智慧型手機", "電池", "電動車", "特斯拉", "太空", "衛星", "火箭", "演算法", "資料庫", "創新", 
+        "專利", "元宇宙", "生物科技", "新創", "台積電", "聯發科", "鴻海", "網際網路"
+    ],
+    "體育": [
+        "sport", "nba", "fifa", "olympics", "football", "tennis", "rookie", "mvp", "veteran", "blowout", 
+        "comeback", "upside", "momentum", "athletics", "blank", "edge", "basketball", "soccer", "baseball", "stadium",
+        "coach", "championship", "tournament", "trophy", "medal", "f1", "racing", "marathon", "fitness", "athlete",
+        "score", "league", "wimbledon", "superbowl", "golf", "badminton", "volleyball", "gymnastics", "swim", "player",
+        "運動", "籃球", "奧運", "體育", "足球", "棒球", "體育場", "教練", "總冠軍", "錦標賽", 
+        "獎盃", "獎牌", "賽車", "馬拉松", "健身", "運動員", "得分", "聯賽", "溫網", "超級盃", 
+        "高爾夫", "羽球", "排球", "體操", "游泳", "球員", "逆轉", "季後賽", "選秀", "自由球員"
+    ],
+    "民生健康": [
+        "health", "virus", "climate", "food", "medicine", "symptoms", "chronic", "acute", "diagnosis", "side effects", 
+        "immunity", "metabolism", "nutrient", "diet", "sedentary", "cancer", "flu", "hypertension", "diabetes", "vaccine",
+        "hospital", "doctor", "therapy", "outbreak", "pandemic", "healthcare", "agriculture", "livestock", "weather", "storm",
+        "flood", "drought", "warming", "carbon", "emission", "pollution", "ecology", "famine", "water", "nutrition",
+        "病毒", "氣候", "醫療", "健康", "民生", "症狀", "慢性", "急性", "診斷", "副作用", 
+        "免疫", "代謝", "營養", "飲食", "久坐", "癌症", "流感", "高血壓", "糖尿病", "疫苗", 
+        "醫院", "醫生", "治療", "爆發", "大流行", "農業", "畜牧", "天氣", "暴風雨", "洪水", 
+        "乾旱", "暖化", "碳排放", "污染", "生態", "飢荒", "水資源", "卡路里", "肥胖", "心理健康"
+    ]
 }
 
 CATEGORY_THEMES = {
@@ -73,7 +115,7 @@ COUNTRY_COORDS = {
     "新德里": [28.6139, 77.2090], "孟買": [19.0760, 72.8777], "杜拜": [25.2048, 55.2708],
     "曼谷": [13.7563, 100.5018], "馬尼拉": [14.5995, 120.9842], "雅加達": [-6.2088, 106.8456],
     "吉隆坡": [3.1390, 101.6869], "胡志明市": [10.8231, 106.6297], "多倫多": [43.6532, -79.3832],
-    "溫哥華": [49.2827, -123.1207], "羅馬": [41.9028, 12.4964], "馬德里": [40.4168, -3.7038],
+    "溫哥戶": [49.2827, -123.1207], "羅馬": [41.9028, 12.4964], "馬德里": [40.4168, -3.7038],
     "莫斯科": [55.7558, 37.6173], "基輔": [50.4501, 30.5234], "開羅": [30.0444, 31.2357],
     "伊斯坦堡": [41.0082, 28.9784], "利雅德": [24.7136, 46.6753], "耶路撒冷": [31.7683, 35.2137],
     "斯德哥爾摩": [59.3293, 18.0686], "哥本哈根": [55.6761, 12.5683], "蘇黎世": [47.3769, 8.5417],
@@ -81,41 +123,11 @@ COUNTRY_COORDS = {
     "聖保羅": [-23.5505, -46.6333], "布宜諾斯艾利斯": [-34.6037, -58.3816], "墨西哥城": [19.4326, -99.1332]
 }
 
-# --- 2. AI 分類器 ---
-@st.cache_resource(show_spinner=False)
-def load_classifier():
-    try:
-        from transformers import pipeline as hf_pipeline
-        return hf_pipeline("zero-shot-classification", model="vicgalle/xlm-roberta-large-xnli-anli")
-    except Exception:
-        return None
-
-def call_ai_arbitrator(title_zh, clf):
-    try:
-        candidate_labels = [
-            "military and geopolitics conflict", "economy and finance market",
-            "technology and science innovations", "sports news",
-            "health and lifestyle medicine", "general international news"
-        ]
-        result = clf(title_zh, candidate_labels)
-        top_label = result['labels'][0]
-        mapping = {
-            "military and geopolitics conflict": "軍事政治",
-            "economy and finance market": "經濟",
-            "technology and science innovations": "科技",
-            "sports news": "體育",
-            "health and lifestyle medicine": "民生健康",
-            "general international news": "一般國際"
-        }
-        return mapping.get(top_label, "一般國際")
-    except Exception:
-        return "一般國際"
-
-# 【核心改動】：限用關鍵字優先，無匹配才用 AI，皆無則歸入一般國際
+# --- 2. 純關鍵字分類器 (完全移除了 AI 模型以實現秒級分類) ---
 def hybrid_news_classifier(title_zh, title_en):
     match_text = (title_en + " " + title_zh).lower()
     
-    # 步驟 1：先初始化各分類的關鍵字得分
+    # 統計每個分類的關鍵字命中次數
     scores = {k: 0 for k in DEFAULT_CATEGORIES.keys()}
     for cat, keywords in DEFAULT_CATEGORIES.items():
         for word in keywords:
@@ -125,16 +137,10 @@ def hybrid_news_classifier(title_zh, title_en):
     max_keyword_cat = max(scores, key=scores.get)
     max_keyword_score = scores[max_keyword_cat]
 
-    # 步驟 2：如果有任一關鍵字匹配成功（分數 > 0），立刻採用，不驚動 AI 運算
+    # 有命中任一關鍵字則直接分配該分類，無任何命中則無條件歸入「一般國際」
     if max_keyword_score > 0:
         return max_keyword_cat
-
-    # 步驟 3：如果關鍵字分數完全為 0，這時才調用 AI 分類器
-    clf = load_classifier()
-    if clf is not None:
-        return call_ai_arbitrator(title_zh, clf)
-        
-    # 步驟 4：若無關鍵字且連 AI 分類器都無法載入，最終放入一般國際
+    
     return "一般國際"
 
 # --- 3. 資料庫 ---
@@ -589,7 +595,7 @@ if current == "🏠 首頁總覽":
                 fill_opacity=0.7
             ).add_to(m)
 
-        st_folium(m, width="100%", height=600, key="main_live_map_folium_v11")
+        st_folium(m, width="100%", height=600, key="main_live_map_folium_v12")
         st.write("---")
         st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
         render_native_news_cards(df_recent)
