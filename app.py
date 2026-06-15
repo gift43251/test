@@ -136,19 +136,15 @@ def init_db():
                      (username TEXT PRIMARY KEY, tags TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS push_settings
                      (id INTEGER PRIMARY KEY, line_token TEXT, keywords TEXT)''')
-        # 新增用來避免重複發送的通知紀錄表
         c.execute('''CREATE TABLE IF NOT EXISTS sent_notifications
                      (link TEXT PRIMARY KEY)''')
         
-        # 加速查詢索引
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
         conn.commit()
 
-
 def send_line_messaging_api(channel_access_token, user_id, message_text):
-    """使用 LINE Messaging API 推送 Push Message 給指定用戶"""
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
@@ -169,8 +165,7 @@ def send_line_messaging_api(channel_access_token, user_id, message_text):
     except Exception:
         return False
 
-
-# --- 4. 新聞抓取（並發 + 批次翻譯 + 具備去重機制的推播優化） ---
+# --- 4. 新聞抓取 ---
 def _detect_country(t_lower, z_lower):
     if "美國" in z_lower or "川普" in z_lower or "白宮" in z_lower or re.search(r'\btrump\b|\bamerica\b|\bwashington\b|\bwhite\s+house\b|\busa\b', t_lower):
         target = "美國"
@@ -199,7 +194,6 @@ def _detect_country(t_lower, z_lower):
     rand_lon = base_lon + random.uniform(-offset, offset)
     return target, rand_lat, rand_lon
 
-
 def _fetch_source_raw(src):
     results = []
     try:
@@ -219,7 +213,6 @@ def _fetch_source_raw(src):
         pass
     return results
 
-
 def _translate_batch(titles_en, translator, batch_size=8):
     translations = {}
     groups = [titles_en[i:i+batch_size] for i in range(0, len(titles_en), batch_size)]
@@ -235,9 +228,7 @@ def _translate_batch(titles_en, translator, batch_size=8):
                 translations[orig] = orig
     return translations
 
-
 def fetch_all_news():
-    # Step 1: 並發爬取
     all_raw = []
     with ThreadPoolExecutor(max_workers=len(NEWS_SOURCES)) as executor:
         futures = [executor.submit(_fetch_source_raw, src) for src in NEWS_SOURCES]
@@ -247,7 +238,6 @@ def fetch_all_news():
     if not all_raw:
         return
 
-    # Step 2: 過濾已存在 DB 的連結
     with get_db_connection() as conn:
         existing_links = set(
             row[0] for row in conn.execute("SELECT link FROM monitor_logs").fetchall()
@@ -255,9 +245,7 @@ def fetch_all_news():
 
     new_entries = [(t, l, s) for t, l, s in all_raw if l not in existing_links]
     
-    # 只要有新入庫新聞，才處理寫入
     if new_entries:
-        # Step 3: 分流中英文，批次翻譯
         translator = GoogleTranslator(source='auto', target='zh-TW')
         to_translate = []
         chinese_ready = []
@@ -280,7 +268,6 @@ def fetch_all_news():
 
         all_processed = chinese_ready + translated_entries
 
-        # Step 4: 分類、地理、情緒分析，批次寫入 DB
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rows_to_insert = []
         for title_zh, title_en, link_raw, source_name in all_processed:
@@ -298,7 +285,6 @@ def fetch_all_news():
             )
             conn.commit()
 
-    # === [優化推播機制：新增防重複檢查] ===
     try:
         with get_db_connection() as conn:
             config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
@@ -310,29 +296,24 @@ def fetch_all_news():
                     
                     keywords = [kw.strip().lower() for kw in config[1].split(",") if kw.strip()]
                     if keywords:
-                        # 檢視最近 10 條入庫新聞
                         recent_news = conn.execute(
                             "SELECT title_zh, source, link FROM monitor_logs ORDER BY time DESC LIMIT 10"
                         ).fetchall()
                         
                         for title_zh, source_name, link_raw in recent_news:
-                            # 1. 檢查此新聞是否早已成功發送過
                             already_sent = conn.execute(
                                 "SELECT 1 FROM sent_notifications WHERE link = ?", (link_raw,)
                             ).fetchone()
                             
-                            # 2. 如果未曾發送過，且內容命中關鍵字，才允許發送
                             if not already_sent and any(kw in title_zh.lower() for kw in keywords):
                                 msg = f"\n🔔 【新聞預警】\n📰 標題: {title_zh}\n📡 來源: {source_name}\n🔗 連結: {link_raw}"
                                 success = send_line_messaging_api(channel_access_token, my_user_id, msg)
                                 
-                                # 3. 推播成功後將網址記錄到「已發送表」，避免下次重複推播
                                 if success:
                                     conn.execute("INSERT OR IGNORE INTO sent_notifications (link) VALUES (?)", (link_raw,))
                                     conn.commit()
     except Exception:
         pass
-
 
 # --- 5. 背景排程 ---
 @st.cache_resource
@@ -387,12 +368,12 @@ def save_user_tags(username, tags):
         conn.execute("INSERT OR REPLACE INTO user_tags (username, tags) VALUES (?, ?)", (username, ",".join(tags)))
         conn.commit()
 
-# --- 7. 初始化 ---
+# --- 7. 初始化（採用方法一：非同步背景執行，防止網頁阻塞） ---
 init_db()
 if 'monitor_started' not in st.session_state:
-    with st.spinner("智慧監控中心初始化，正在跨國同步最新全球焦點..."):
-        fetch_all_news()
-    start_scheduler()
+    start_scheduler()  # 啟動自動定時排程器
+    # 建立一條獨立線程在後台執行初次抓取，讓 Streamlit 前端直接渲染完成
+    threading.Thread(target=fetch_all_news, daemon=True).start()
     st.session_state['monitor_started'] = True
 
 # --- 8. Session State 初始化 ---
@@ -508,7 +489,7 @@ st.write("---")
 # --- 12. 新聞卡片元件 ---
 def render_native_news_cards(df_target):
     if df_target is None or df_target.empty:
-        st.info("💡 該時段或分類目前暫無新聞條目。")
+        st.info("💡 該時段或分類目前暫無新聞條目。(若系統為初次啟動，後台仍在同步中，請數秒後刷新頁面)")
         return
 
     core_categories = ["軍事政治", "經濟", "科技", "體育", "民生健康", "一般國際"]
@@ -558,7 +539,7 @@ if current == "🏠 首頁總覽":
     df_recent = query_recent_hour_data()
 
     if df_recent.empty:
-        st.warning("⏱️ 最近 1 小時內國際新聞台暫無新發布事件。")
+        st.warning("⏱️ 最近 1 小時內國際新聞台暫無新發布事件。 (若剛啟動系統，請等待 5~10 秒後點選左側「手動同步」按鈕刷新資料庫)")
     else:
         m = folium.Map(location=[20.0, 0.0], zoom_start=2, tiles="OpenStreetMap")
 
@@ -611,9 +592,9 @@ elif current == "🎬 影片專區":
     st.subheader("📺 科技與財經專欄")
     v_col3, v_col4 = st.columns(2)
     with v_col3:
-        st.video("https://www.youtube.com/watch?v=86YLFOog4GM") # 彭博 TV
+        st.video("https://www.youtube.com/watch?v=86YLFOog4GM")
     with v_col4:
-        st.video("https://www.youtube.com/watch?v=H74S940Z-yU") # 科技頻道範例
+        st.video("https://www.youtube.com/watch?v=H74S940Z-yU")
 
 # C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
@@ -626,7 +607,7 @@ elif current == "📊 數據統計分析":
     st.title("📊 全球新聞數據統計分析")
     df_all = query_all_data()
     if df_all.empty:
-        st.warning("資料庫內暫無數據可供 analysis。")
+        st.warning("資料庫內暫無數據可供分析。")
     else:
         col_f1, col_f2 = st.columns([1, 1])
         
@@ -663,7 +644,6 @@ elif current == "🔍 關鍵字搜尋":
         render_native_news_cards(results)
     elif search_query:
         st.info("目前尚無符合該關鍵字的新聞。")
-
 
 # F. LINE 通知設定頁面
 elif current == "📢 LINE通知設定":
@@ -704,7 +684,6 @@ elif current == "📢 LINE通知設定":
                 st.success("🎉 LINE 官方帳號通知設定更新成功！系統已開啟每 5 分鐘自動比對與推送。")
             else:
                 st.error("❌ 請務必填寫 Channel Access Token 與 User ID 才能啟用發送功能。")
-
 
 # G. 動態分類專屬時間軸
 elif current.startswith("🔖 "):
