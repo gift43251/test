@@ -20,7 +20,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 # --- 1. 全域配置與資料庫設定 ---
 st.set_page_config(page_title="全球新聞智慧监控中心", layout="wide")
 
-DB_NAME = 'news_monitor_v9.db'
+# 更換資料庫名稱（v10），徹底刷洗掉原本存在資料庫裡的舊「非洲定位點」歷史紀錄
+DB_NAME = 'news_monitor_v10.db'
 
 NEWS_SOURCES = [
     {"name": "BBC World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml"},
@@ -33,7 +34,7 @@ NEWS_SOURCES = [
 DEFAULT_CATEGORIES = {
     "軍事政治": ["military", "war", "russia", "israel", "defense", "election", "ukraine", "conflict", "sanctions", "die", "arrest", "retrial", "airstrike", "biden", "combat", "tactic", "ally", "ceasefire", "invasion", "refugee", "戰爭", "選舉", "軍事", "政治", "衝突", "烏克蘭", "俄羅斯", "以色列"],
     "經濟": ["economy", "inflation", "gdp", "fed", "rate", "finance", "降息", "通膨", "股市", "經濟", "財經"],
-    "科技": ["tech", "semiconductor", "apple", "google", "gpu", "tsmc", "台積電", "晶片", "科技", "人工智慧"],
+    "科技": ["tech", "semiconductor", "apple", "google", "gpu", "tsmc", "台積電", "晶片", "科技", "人工智慧", "nvidia", "輝達", "nasa"],
     "體育": ["sport", "nba", "fifa", "olympics", "football", "tennis", "rookie", "mvp", "veteran", "blowout", "comeback", "upside", "momentum", "athletics", "blank", "edge", "運動", "籃球", "奧運", "體育"],
     "民生健康": ["health", "virus", "climate", "food", "medicine", "symptoms", "chronic", "acute", "diagnosis", "side effects", "immunity", "metabolism", "nutrient", "diet", "sedentary", "cancer", "flu", "hypertension", "diabetes", "病毒", "氣候", "醫療", "健康", "民生"]
 }
@@ -47,7 +48,7 @@ CATEGORY_THEMES = {
     "一般國際": {"emoji": "⚪", "label": "【一般國際】", "color": "gray"}
 }
 
-# 地理座標精確擴充字典 (精確比對國家與50大城市，移除「全球」基準點)
+# 地理座標擴充字典 (精確比對國家與50大城市，完全移除全球預設點)
 COUNTRY_COORDS = {
     # 主要國家
     "美國": [37.0902, -95.7129], "中國": [35.8617, 104.1954], "英國": [55.3781, -3.4360],
@@ -78,7 +79,7 @@ COUNTRY_COORDS = {
     "伊斯坦堡": [41.0082, 28.9784], "利雅德": [24.7136, 46.6753], "耶路撒冷": [31.7683, 35.2137],
     "斯德哥爾摩": [59.3293, 18.0686], "哥本哈根": [55.6761, 12.5683], "蘇黎世": [47.3769, 8.5417],
     "布魯塞爾": [50.8503, 4.3517], "維也納": [48.2082, 16.3738], "雅典": [37.9838, 23.7275],
-    "聖保羅": [-23.5505, -46.6333], "布宜諾斯艾利斯": [-34.6037, -58.3816], "墨西哥城": [19.4326, -99.1332],
+    "聖保羅": [-23.5505, -46.6333], "布宜諾斯艾利斯": [-34.6037, -58.3816], "墨西哥城": [19.4326, -99.1332]
 }
 
 CRISIS_STRONG_WORDS = [
@@ -87,7 +88,7 @@ CRISIS_STRONG_WORDS = [
     "combat", "drone", "attack", "missile", "hostage", "shot dead", "hijack", "explode", "bomb"
 ]
 
-# --- 2. AI 分類器（延遲載入，避免阻塞啟動） ---
+# --- 2. AI 分類器 ---
 @st.cache_resource(show_spinner=False)
 def load_classifier():
     try:
@@ -99,12 +100,9 @@ def load_classifier():
 def call_ai_arbitrator(title_zh, clf):
     try:
         candidate_labels = [
-            "military and geopolitics conflict",
-            "economy and finance market",
-            "technology and science innovations",
-            "sports news",
-            "health and lifestyle medicine",
-            "general international news"
+            "military and geopolitics conflict", "economy and finance market",
+            "technology and science innovations", "sports news",
+            "health and lifestyle medicine", "general international news"
         ]
         result = clf(title_zh, candidate_labels)
         top_label = result['labels'][0]
@@ -166,7 +164,6 @@ def init_db():
                      (id INTEGER PRIMARY KEY, line_token TEXT, keywords TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS sent_notifications
                      (link TEXT PRIMARY KEY)''')
-        
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
@@ -178,22 +175,19 @@ def send_line_messaging_api(channel_access_token, user_id, message_text):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {channel_access_token}"
     }
-    payload = {
-        "to": user_id,
-        "messages": [{"type": "text", "text": message_text}]
-    }
+    payload = {"to": user_id, "messages": [{"type": "text", "text": message_text}]}
     try:
         response = requests.post(url, json=payload, headers=headers)
         return response.status_code == 200
     except Exception:
         return False
 
-# --- 4. 新聞抓取與地理定位追蹤 ---
+# --- 4. 精確地理關鍵字過濾定位系統 ---
 def _detect_country(t_lower, z_lower):
     target = None
     
-    # 1. 熱門組織與企業指標關鍵字（優先導向關聯母國）
-    if "nvidia" in t_lower or "輝達" in z_lower or "nasa" in t_lower or "apple" in t_lower or "google" in t_lower or "openai" in t_lower or "microsoft" in t_lower or "fed" in t_lower or "聯準會" in z_lower or "wall street" in t_lower or "華爾街" in z_lower:
+    # 1. 知名科技巨頭、核心機構與自訂熱門關鍵字（精準導引至母國）
+    if "nvidia" in t_lower or "輝達" in z_lower or "nasa" in t_lower or "apple" in t_lower or "google" in t_lower or "openai" in t_lower or "microsoft" in t_lower or re.search(r'\bfed\b', t_lower) or "聯準會" in z_lower or "wall street" in t_lower or "華爾街" in z_lower:
         target = "美國"
     elif "tsmc" in t_lower or "台積電" in z_lower or "聯發科" in z_lower or "foxconn" in t_lower or "鴻海" in z_lower:
         target = "台灣"
@@ -206,7 +200,7 @@ def _detect_country(t_lower, z_lower):
     elif "華為" in z_lower or "huawei" in t_lower or "byd" in t_lower or "比亞迪" in z_lower or "tencent" in t_lower or "騰訊" in z_lower or "alibaba" in t_lower or "阿里巴巴" in z_lower:
         target = "中國"
         
-    # 2. 50大城市精細定位判定
+    # 2. 50大國際核心城市精細判定
     elif "new york" in t_lower or "紐約" in z_lower: target = "紐約"
     elif "los angeles" in t_lower or "洛杉磯" in z_lower: target = "洛杉磯"
     elif "san francisco" in t_lower or "舊金山" in z_lower: target = "舊金山"
@@ -218,7 +212,7 @@ def _detect_country(t_lower, z_lower):
     elif "london" in t_lower or "倫敦" in z_lower: target = "倫敦"
     elif "paris" in t_lower or "巴黎" in z_lower: target = "巴黎"
     elif "berlin" in t_lower or "柏林" in z_lower: target = "柏林"
-    elif "frankfurt" in t_lower or "法蘭克福" in z_lower: target = "法蘭合福"
+    elif "frankfurt" in t_lower or "法蘭克福" in z_lower: target = "法蘭克福"
     elif "tokyo" in t_lower or "東京" in z_lower: target = "東京"
     elif "osaka" in t_lower or "大阪" in z_lower: target = "大阪"
     elif "seoul" in t_lower or "首爾" in z_lower: target = "首爾"
@@ -256,14 +250,14 @@ def _detect_country(t_lower, z_lower):
     elif "athens" in t_lower or "雅典" in z_lower: target = "雅典"
     elif "sao paulo" in t_lower or "聖保羅" in z_lower: target = "聖保羅"
     elif "buenos aires" in t_lower or "布宜諾斯艾利斯" in z_lower: target = "布宜諾斯艾利斯"
-    elif "mexico city" in t_lower or "自動墨西哥城" in z_lower: target = "墨西哥城"
+    elif "mexico city" in t_lower or "墨西哥城" in z_lower: target = "墨西哥城"
 
-    # 3. 國家與區域大類判定
+    # 3. 國家與主流區域層級比對（使用 \b 確保單字獨立，防止英文片語字母誤觸）
     elif "台灣" in z_lower or re.search(r'\btaiwan\b', t_lower): target = "台灣"
-    elif "美國" in z_lower or "白宮" in z_lower or re.search(r'\bamerica\b|\bwhite\s+house\b|\busa\b|\bus\b', t_lower): target = "美國"
+    elif "美國" in z_lower or "白宮" in z_lower or re.search(r'\bamerica\b|\bwhite\s+house\b|\busa\b|\bunited\s+states\b', t_lower): target = "美國"
     elif "烏克蘭" in z_lower or re.search(r'\bukraine\b', t_lower): target = "烏克蘭"
     elif "中國" in z_lower or re.search(r'\bchina\b', t_lower): target = "中國"
-    elif "英國" in z_lower or re.search(r'\buk\b|\bbritain\b', t_lower): target = "英國"
+    elif "英國" in z_lower or re.search(r'\buk\b|\bbritain\b|\bunited\s+kingdom\b', t_lower): target = "英國"
     elif "日本" in z_lower or re.search(r'\bjapan\b', t_lower): target = "日本"
     elif "南韓" in z_lower or "韓國" in z_lower or re.search(r'\bkorea\b', t_lower): target = "南韓"
     elif "加拿大" in z_lower or re.search(r'\bcanada\b', t_lower): target = "加拿大"
@@ -290,7 +284,8 @@ def _detect_country(t_lower, z_lower):
     elif "荷蘭" in z_lower or re.search(r'\bnetherlands\b', t_lower): target = "荷蘭"
     elif "歐洲" in z_lower or re.search(r'\beurope\b', t_lower): target = "歐洲"
 
-    # 如果完全比對不到關鍵字，將 country 與座標設定為 None，代表不顯示在地圖上
+    # 【重要改動】如果完全比對不到設定的關鍵字城市或國家，回傳 None。
+    # 彻底杜绝任何「全球」標籤，也不會被預設分配到任何經緯度上。
     if target is None:
         return None, None, None
 
@@ -303,17 +298,12 @@ def _detect_country(t_lower, z_lower):
 def _fetch_source_raw(src):
     results = []
     try:
-        feed = feedparser.parse(
-            src["url"],
-            request_headers={"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"}
-        )
+        feed = feedparser.parse(src["url"], request_headers={"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"})
         for entry in feed.entries[:12]:
             title_raw = getattr(entry, 'title', '').strip()
             link_raw = getattr(entry, 'link', '').strip()
-            if not title_raw or not link_raw:
-                continue
-            if "error 500" in title_raw.lower() or "server error" in title_raw.lower():
-                continue
+            if not title_raw or not link_raw: continue
+            if "error 500" in title_raw.lower() or "server error" in title_raw.lower(): continue
             results.append((title_raw, link_raw, src["name"]))
     except Exception:
         pass
@@ -330,8 +320,7 @@ def _translate_batch(titles_en, translator, batch_size=8):
             for j, orig in enumerate(group):
                 translations[orig] = parts[j] if j < len(parts) else orig
         except Exception:
-            for orig in group:
-                translations[orig] = orig
+            for orig in group: translations[orig] = orig
     return translations
 
 def fetch_all_news():
@@ -341,8 +330,7 @@ def fetch_all_news():
         for future in as_completed(futures):
             all_raw.extend(future.result())
 
-    if not all_raw:
-        return
+    if not all_raw: return
 
     with get_db_connection() as conn:
         existing_links = set(row[0] for row in conn.execute("SELECT link FROM monitor_logs").fetchall())
@@ -399,9 +387,7 @@ def fetch_all_news():
                     my_user_id = saved_credentials[1].strip()
                     keywords = [kw.strip().lower() for kw in config[1].split(",") if kw.strip()]
                     if keywords:
-                        recent_news = conn.execute(
-                            "SELECT title_zh, source, link FROM monitor_logs ORDER BY time DESC LIMIT 10"
-                        ).fetchall()
+                        recent_news = conn.execute("SELECT title_zh, source, link FROM monitor_logs ORDER BY time DESC LIMIT 10").fetchall()
                         for title_zh, source_name, link_raw in recent_news:
                             already_sent = conn.execute("SELECT 1 FROM sent_notifications WHERE link = ?", (link_raw,)).fetchone()
                             if not already_sent and any(kw in title_zh.lower() for kw in keywords):
@@ -426,8 +412,7 @@ def start_scheduler():
 def query_all_data():
     with get_db_connection() as conn:
         df = pd.read_sql_query("SELECT * FROM monitor_logs ORDER BY time DESC", conn)
-    if not df.empty:
-        df['time_dt'] = pd.to_datetime(df['time'])
+    if not df.empty: df['time_dt'] = pd.to_datetime(df['time'])
     return df
 
 @st.cache_data(ttl=30)
@@ -435,21 +420,18 @@ def query_recent_hour_data():
     one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
     with get_db_connection() as conn:
         df = pd.read_sql_query("SELECT * FROM monitor_logs WHERE time >= ? ORDER BY time DESC", conn, params=(one_hour_ago,))
-    if not df.empty:
-        df['time_dt'] = pd.to_datetime(df['time'])
+    if not df.empty: df['time_dt'] = pd.to_datetime(df['time'])
     return df
 
 @st.cache_data(ttl=60)
 def query_category_data(category_name):
     with get_db_connection() as conn:
         df = pd.read_sql_query("SELECT * FROM monitor_logs WHERE category = ? ORDER BY time DESC", conn, params=(category_name,))
-    if not df.empty:
-        df['time_dt'] = pd.to_datetime(df['time'])
+    if not df.empty: df['time_dt'] = pd.to_datetime(df['time'])
     return df
 
 def get_user_tags(username):
-    if st.session_state.get('is_guest') and 'guest_tags' in st.session_state:
-        return st.session_state['guest_tags']
+    if st.session_state.get('is_guest') and 'guest_tags' in st.session_state: return st.session_state['guest_tags']
     with get_db_connection() as conn:
         res = conn.execute("SELECT tags FROM user_tags WHERE username=?", (username,)).fetchone()
     return res[0].split(",") if res and res[0] else list(DEFAULT_CATEGORIES.keys()) + ["一般國際"]
@@ -475,7 +457,6 @@ if 'current_view' not in st.session_state: st.session_state['current_view'] = "�
 # --- 9. 登入管制牆 ---
 if not st.session_state['logged_in'] and not st.session_state['is_guest']:
     st.title("全球新聞智能監控系統")
-    st.subheader("請選擇進入模式以開啟個性化儀表板")
     col1, col2 = st.columns(2)
     with col1:
         with st.container(border=True):
@@ -491,7 +472,6 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
     with col2:
         with st.container(border=True):
             st.markdown("### 🌐 訪客快捷通道")
-            st.write("免帳號密碼快捷登入，即刻查看全球最新事件地圖。")
             if st.button("🚀 以訪客身份免登入進入", use_container_width=True, type="primary", key="btn_guest_login"):
                 st.session_state['is_guest'] = True
                 st.session_state['username'] = "訪客模式 Guest"
@@ -503,8 +483,7 @@ if not st.session_state['logged_in'] and not st.session_state['is_guest']:
 # --- 10. 側邊欄 ---
 st.sidebar.title(f"👤 {st.session_state['username']}")
 if st.sidebar.button("🔄 手動同步最新新聞", key="side_sync_btn"):
-    with st.spinner("正在重新爬取各國新聞..."):
-        fetch_all_news()
+    with st.spinner("正在重新爬取各國新聞..."): fetch_all_news()
     st.cache_data.clear()
     st.rerun()
 
@@ -514,25 +493,18 @@ saved_tags = get_user_tags(st.session_state['username'])
 
 selected_tags = []
 for tag in all_available_tags:
-    is_checked = tag in saved_tags
-    if st.sidebar.checkbox(f"🔖 {tag}", value=is_checked, key=f"sidebar_fixed_cb_{tag}"):
+    if st.sidebar.checkbox(f"🔖 {tag}", value=tag in saved_tags, key=f"sidebar_fixed_cb_{tag}"):
         selected_tags.append(tag)
 
-if st.session_state['is_guest']:
-    st.session_state['guest_tags'] = selected_tags
-else:
-    if st.sidebar.button("💾 儲存我的勾選設定", key="side_save_btn"):
-        save_user_tags(st.session_state['username'], selected_tags)
-        st.sidebar.success("訂閱設定已同步！")
-        st.rerun()
+if st.sidebar.button("💾 儲存我的勾選設定", key="side_save_btn") and not st.session_state['is_guest']:
+    save_user_tags(st.session_state['username'], selected_tags)
+    st.sidebar.success("訂閱設定已同步！")
+    st.rerun()
 
 if st.sidebar.button("🚪 登出/切換模式", key="side_logout_btn"):
     st.session_state['logged_in'] = False
     st.session_state['is_guest'] = False
-    st.session_state['username'] = ""
     st.session_state['current_view'] = "🏠 首頁總覽"
-    if 'guest_tags' in st.session_state: del st.session_state['guest_tags']
-    if 'monitor_started' in st.session_state: del st.session_state['monitor_started']
     st.rerun()
 
 # --- 11. 導覽列 ---
@@ -542,18 +514,16 @@ if not st.session_state['is_guest']: base_menu.append("📢 LINE通知設定")
 
 cols_row1 = st.columns(len(base_menu))
 for idx, item_name in enumerate(base_menu):
-    is_active = st.session_state['current_view'] == item_name
-    if cols_row1[idx].button(item_name, use_container_width=True, key=f"nav_row1_{idx}", type="primary" if is_active else "secondary"):
+    if cols_row1[idx].button(item_name, use_container_width=True, key=f"nav_row1_{idx}", type="primary" if st.session_state['current_view'] == item_name else "secondary"):
         st.session_state['current_view'] = item_name
         st.rerun()
 
-st.write("### 🔖 訂閱新聞分類頻道")
 category_menu = [f"🔖 {t}" for t in selected_tags]
 if category_menu:
+    st.write("### 🔖 訂閱新聞分類頻道")
     cols_row2 = st.columns(len(category_menu))
     for idx, item_name in enumerate(category_menu):
-        is_active = st.session_state['current_view'] == item_name
-        if cols_row2[idx].button(item_name, use_container_width=True, key=f"nav_row2_{idx}", type="primary" if is_active else "secondary"):
+        if cols_row2[idx].button(item_name, use_container_width=True, key=f"nav_row2_{idx}", type="primary" if st.session_state['current_view'] == item_name else "secondary"):
             st.session_state['current_view'] = item_name
             st.rerun()
 
@@ -562,7 +532,7 @@ st.write("---")
 # --- 12. 新聞卡片元件 ---
 def render_native_news_cards(df_target):
     if df_target is None or df_target.empty:
-        st.info("💡 目前暫無新聞條目。(若系統為初次啟動，後台仍在同步中，請數秒後刷新頁面)")
+        st.info("💡 目前暫無新聞條目。(後台正在同步中，請數秒後刷新頁面)")
         return
 
     core_categories = ["軍事政治", "經濟", "科技", "體育", "民生健康", "一般國際"]
@@ -573,7 +543,7 @@ def render_native_news_cards(df_target):
         news_id = row['id']
         theme = CATEGORY_THEMES.get(cat, CATEGORY_THEMES["一般國際"])
         sentiment_text = "正面" if row['sentiment'] > 0.05 else ("負面" if row['sentiment'] < -0.05 else "中性")
-        display_country = row['country'] if row['country'] else "未識別特定區域"
+        display_country = row['country'] if row['country'] else "未辨識出精確地點"
 
         with st.container(border=True):
             col_meta, col_title, col_btn = st.columns([2.5, 7.0, 2.5])
@@ -588,9 +558,8 @@ def render_native_news_cards(df_target):
                 st.write("")
                 selected_nav = st.selectbox("移動至 👇", options=nav_options, index=0, key=f"move_sel_{i}_{news_id}", label_visibility="collapsed")
                 if selected_nav != "請選擇要移動至的分頁...":
-                    new_category = selected_nav.replace("🔖 ", "")
                     with get_db_connection() as conn:
-                        conn.execute("UPDATE monitor_logs SET category = ? WHERE id = ?", (new_category, news_id))
+                        conn.execute("UPDATE monitor_logs SET category = ? WHERE id = ?", (selected_nav.replace("🔖 ", ""), news_id))
                         conn.commit()
                     st.cache_data.clear()
                     st.session_state['current_view'] = selected_nav
@@ -607,10 +576,11 @@ if current == "🏠 首頁總覽":
     if df_recent.empty:
         st.warning("⏱️ 最近 1 小時內國際新聞台暫無新發布事件。")
     else:
-        # 地圖篩選：排除國家欄位為 None 或是找不到經緯度的資料，確保不出現任何「全球」標記或亂定位
+        # 【嚴格過濾邏輯】國家為 None 或是經緯度為空的欄位，保證 100% 絕對不畫到地圖上！
         df_map_ready = df_recent.dropna(subset=['country', 'lat', 'lon'])
+        df_map_ready = df_map_ready[df_map_ready['country'] != 'None']
         
-        m = folium.Map(location=[25.0, 10.0], zoom_start=2, tiles="OpenStreetMap")
+        m = folium.Map(location=[25.0, 15.0], zoom_start=2, tiles="OpenStreetMap")
 
         for _, row in df_map_ready.iterrows():
             cat = row['category']
@@ -635,7 +605,7 @@ if current == "🏠 首頁總覽":
                 fill_opacity=0.7
             ).add_to(m)
 
-        st_folium(m, width="100%", height=600, key="main_live_map_folium")
+        st_folium(m, width="100%", height=600, key="main_live_map_folium_v10")
         st.write("---")
         st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
         render_native_news_cards(df_recent)
@@ -644,77 +614,58 @@ if current == "🏠 首頁總覽":
 elif current == "🎬 影片專區":
     st.title("🎬 24小時即時新聞影音專區")
     v_col1, v_col2 = st.columns(2)
-    with v_col1:
-        st.subheader("🔴 聯合新聞網 24h Live")
-        st.video("https://www.youtube.com/watch?v=wM0g8EoGcA0") 
-    with v_col2:
-        st.subheader("🔴 Sky News Live (國際焦點)")
-        st.video("https://www.youtube.com/watch?v=9Auq9mYxFEE")
+    with v_col1: st.video("https://www.youtube.com/watch?v=wM0g8EoGcA0") 
+    with v_col2: st.video("https://www.youtube.com/watch?v=9Auq9mYxFEE")
 
 # C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
     st.title("⏳ 全球歷史即時總時間軸")
-    df_all = query_all_data()
-    render_native_news_cards(df_all)
+    render_native_news_cards(query_all_data())
 
 # D. 數據統計分析
 elif current == "📊 數據統計分析":
     st.title("📊 全球新聞數據統計分析")
     df_all = query_all_data()
-    if df_all.empty:
-        st.warning("資料庫內暫無數據可供分析。")
+    if df_all.empty: st.warning("資料庫內暫無數據可供分析。")
     else:
         col_f1, col_f2 = st.columns([1, 1])
         with col_f1:
-            st.write("### 🍩 各類別新聞佔比")
             category_counts = df_all['category'].value_counts().reset_index()
             category_counts.columns = ['category', 'count']
-            fig_pie = px.pie(category_counts, names='category', values='count', title="各類別發布比例", hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True, key="stat_pie_chart")
+            st.plotly_chart(px.pie(category_counts, names='category', values='count', title="各類別發布比例", hole=0.4), use_container_width=True, key="stat_pie_chart")
         with col_f2:
-            st.write("### 📈 新聞動態抓取走勢線")
             df_trend = df_all.copy()
             df_trend['time_group'] = df_trend['time_dt'].dt.floor('10min').dt.strftime("%Y-%m-%d %H:%M")
             time_trend = df_trend.groupby(['time_group', 'category']).size().reset_index(name='新聞數量')
-            fig_line = px.line(time_trend.sort_values(by='time_group'), x="time_group", y="新聞數量", color="category", title="趨勢走勢線", markers=True)
-            st.plotly_chart(fig_line, use_container_width=True, key="stat_line_chart")
+            st.plotly_chart(px.line(time_trend.sort_values(by='time_group'), x="time_group", y="新聞數量", color="category", title="趨勢走勢線", markers=True), use_container_width=True, key="stat_line_chart")
 
 # E. 關鍵字搜尋
 elif current == "🔍 關鍵字搜尋":
     st.title("🔍 全域新聞關鍵字檢索")
-    search_query = st.text_input("輸入要查詢的關鍵字：", placeholder="例如：台積電、晶片、戰爭", key="search_box_input")
+    search_query = st.text_input("輸入要查詢的關鍵字：", placeholder="例如：台積電、晶片", key="search_box_input")
     df_all = query_all_data()
     if search_query and not df_all.empty:
-        results = df_all[df_all['title_zh'].str.contains(search_query, na=False, case=False)]
-        st.write(f"共找到 {len(results)} 筆符合條件的條目：")
-        render_native_news_cards(results)
+        render_native_news_cards(df_all[df_all['title_zh'].str.contains(search_query, na=False, case=False)])
 
 # F. LINE 通知設定頁面
 elif current == "📢 LINE通知設定":
     st.title("📢 LINE 官方帳號智慧預警推送")
-    with get_db_connection() as conn:
-        curr_config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
-    
+    with get_db_connection() as conn: curr_config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
     display_token, display_userid = "", ""
-    if curr_config and curr_config[0] and "|||" in curr_config[0]:
-        parts = curr_config[0].split("|||")
-        display_token, display_userid = parts[0], parts[1]
-
+    if curr_config and curr_config[0] and "|||" in curr_config[0]: display_token, display_userid = curr_config[0].split("|||")
     with st.form("push_form_cfg"):
         token_input = st.text_input("1. Channel Access Token", value=display_token, type="password", key="line_tok_input")
         userid_input = st.text_input("2. Your User ID", value=display_userid, key="line_uid_input")
-        kw_input = st.text_area("3. 追蹤關鍵字 (使用英文逗號隔開)", value=curr_config[1] if curr_config else "", key="line_kw_input")
-        
+        kw_input = st.text_area("3. 追蹤關鍵字", value=curr_config[1] if curr_config else "", key="line_kw_input")
         if st.form_submit_button("儲存並開啟智慧推播"):
             if token_input.strip() and userid_input.strip():
                 with get_db_connection() as conn:
                     conn.execute("INSERT OR REPLACE INTO push_settings (id, line_token, keywords) VALUES (1, ?, ?)", (f"{token_input.strip()}|||{userid_input.strip()}", kw_input.replace("，", ",")))
                     conn.commit()
-                st.success("🎉 LINE 官方帳號通知設定更新成功！")
+                st.success("🎉 LINE 通知設定更新成功！")
 
 # G. 動態分類專屬時間軸
 elif current.startswith("🔖 "):
     target_tag = current.replace("🔖 ", "")
     st.title(f"🔖 分類專屬獨立時間軸：{target_tag}")
-    tag_df = query_category_data(target_tag)
-    render_native_news_cards(tag_df)
+    render_native_news_cards(query_category_data(target_tag))
