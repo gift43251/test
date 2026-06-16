@@ -296,9 +296,6 @@ def _fetch_source_raw(src):
             if not title_raw or not link_raw: continue
             if "error 500" in title_raw.lower() or "server error" in title_raw.lower(): continue
             results.append((title_raw, link_raw, src["name"]))
-    except Exception:
-        pass
-    return results
 
 def _translate_batch(titles_en, translator, batch_size=8):
     translations = {}
