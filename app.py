@@ -163,6 +163,16 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
+        
+        # --- 🌟 【核心安全清理機制】🌟 ---
+        # 1. 確保 push_settings 裡面一定有一筆初始欄位，不要讓 fetchone() 找不到 id=1 崩潰
+        res = c.execute("SELECT id FROM push_settings WHERE id=1").fetchone()
+        if not res:
+            c.execute("INSERT INTO push_settings (id, line_token, keywords) VALUES (1, '', '')")
+            
+        # 2. 【核心精準清理】解除這一行註解後執行，會立刻清空舊新聞，但「絕對不會」動到你的 LINE 設定！
+        c.execute("DELETE FROM monitor_logs") 
+        
         conn.commit()
 
 def send_line_messaging_api(channel_access_token, user_id, message_text):
@@ -581,7 +591,6 @@ current = st.session_state['current_view']
 
 # A. 首頁總覽
 if current == "🏠 首頁總覽":
-    # 🛡️ 【保險機制區塊】當打開首頁時，強制再次執行 Error 500 清理
     try:
         with get_db_connection() as conn:
             conn.execute("""
@@ -597,7 +606,6 @@ if current == "🏠 首頁總覽":
 
     st.title("🗺️ 全球即時新聞事件地圖 (最近 1 小時)")
     
-    # 在首頁最頂部多增加一個直覺的強制同步更新按鈕，防止排程器死結
     if st.button("🔄 發現時間停滯？強制抓取此時此刻最新新聞", type="primary"):
         with st.spinner("正在擊活連線，破除舊時間快取..."):
             fetch_all_news()
@@ -628,27 +636,3 @@ if current == "🏠 首頁總覽":
                 <a href='{row['link']}' target='_blank' style='display:inline-block; padding:5px 10px; background-color:#ff4b4b; color:white; text-decoration:none; border-radius:4px;'>前往原文</a>
             </div>
             """
-            folium.CircleMarker(
-                location=[row['lat'], row['lon']],
-                radius=8,
-                popup=folium.Popup(popup_html, max_width=300),
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.7
-            ).add_to(m)
-
-        st_folium(m, width="100%", height=600, key="main_live_map_folium_v12")
-        st.write("---")
-        st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
-        render_native_news_cards(df_recent)
-
-# B. 影片專區
-elif current == "🎬 影片專區":
-    st.title("🎬 即時新聞影音連結專區")
-    
-    # 從資料庫中讀取最新新聞
-    df_all = query_all_data()
-    
-    if df_all.empty:
-        st.info("💡 目前暫無影音專區內容。")
