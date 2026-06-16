@@ -598,7 +598,7 @@ if current == "🏠 首頁總覽":
     st.title("🗺️ 全球即時新聞事件地圖 (最近 1 小時)")
     
     # 在首頁最頂部多增加一個直覺的強制同步更新按鈕，防止排程器死結
-    if st.button("🔄 發現時間停滯？強制抓取此時此刻最新新聞", type="primary"):
+    if st.button("🔄 強制抓取新聞", type="primary"):
         with st.spinner("正在擊活連線，破除舊時間快取..."):
             fetch_all_news()
             st.cache_data.clear()
