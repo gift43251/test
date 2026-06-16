@@ -294,8 +294,15 @@ def _fetch_source_raw(src):
             title_raw = getattr(entry, 'title', '').strip()
             link_raw = getattr(entry, 'link', '').strip()
             if not title_raw or not link_raw: continue
-            if "error 500" in title_raw.lower() or "server error" in title_raw.lower(): continue
+            
+            t_lower = title_raw.lower()
+            if "error 500" in t_lower or "server error" in t_lower or "internal server error" in t_lower: 
+                continue
+                
             results.append((title_raw, link_raw, src["name"]))
+    except Exception:
+        pass  # 👈 檢查這裡！上一個函式的 except 不能漏掉或縮排錯誤
+    return results
 
 def _translate_batch(titles_en, translator, batch_size=8):
     translations = {}
@@ -308,9 +315,12 @@ def _translate_batch(titles_en, translator, batch_size=8):
             for j, orig in enumerate(group):
                 translations[orig] = parts[j] if j < len(parts) else orig
         except Exception:
-            for orig in group: translations[orig] = orig
+            for orig in group: 
+                try:
+                    translations[orig] = translator.translate(orig)
+                except Exception:
+                    translations[orig] = orig
     return translations
-
 def fetch_all_news():
     all_raw = []
     with ThreadPoolExecutor(max_workers=len(NEWS_SOURCES)) as executor:
