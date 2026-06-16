@@ -102,7 +102,7 @@ COUNTRY_COORDS = {
     "泰國": [15.8700, 100.9925], "馬來西亞": [4.2105, 101.9758], "印尼": [-0.7893, 113.9213],
     "義大利": [41.8719, 12.5674], "西班牙": [40.4637, -3.7492], "墨西哥": [23.6345, -102.5528],
     "沙烏地阿拉伯": [23.8859, 45.0792], "瑞士": [46.8182, 8.2275], "荷蘭": [52.1326, 5.2913],
-    
+
     # 50 大國際城市核心座標
     "紐約": [40.7128, -74.0060], "洛杉磯": [34.0522, -118.2437], "舊金山": [37.7749, -122.4194],
     "華盛頓": [38.9072, -77.0369], "芝加哥": [41.8781, -87.6298], "西雅圖": [47.6062, -122.3321],
@@ -126,7 +126,7 @@ COUNTRY_COORDS = {
 # --- 2. 純關鍵字分類器 (完全移除了 AI 模型以實現秒級分類) ---
 def hybrid_news_classifier(title_zh, title_en):
     match_text = (title_en + " " + title_zh).lower()
-    
+
     # 統計每個分類的關鍵字命中次數
     scores = {k: 0 for k in DEFAULT_CATEGORIES.keys()}
     for cat, keywords in DEFAULT_CATEGORIES.items():
@@ -140,7 +140,7 @@ def hybrid_news_classifier(title_zh, title_en):
     # 有命中任一關鍵字則直接分配該分類，無任何命中則無條件歸入「一般國際」
     if max_keyword_score > 0:
         return max_keyword_cat
-    
+
     return "一般國際"
 
 # --- 3. 資料庫 ---
@@ -163,16 +163,6 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_time ON monitor_logs(time DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON monitor_logs(category)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_link ON monitor_logs(link)")
-        
-        # --- 🌟 【核心安全清理機制】🌟 ---
-        # 1. 確保 push_settings 裡面一定有一筆初始欄位，不要讓 fetchone() 找不到 id=1 崩潰
-        res = c.execute("SELECT id FROM push_settings WHERE id=1").fetchone()
-        if not res:
-            c.execute("INSERT INTO push_settings (id, line_token, keywords) VALUES (1, '', '')")
-            
-        # 2. 【核心精準清理】解除這一行註解後執行，會立刻清空舊新聞，但「絕對不會」動到你的 LINE 設定！
-        c.execute("DELETE FROM monitor_logs") 
-        
         conn.commit()
 
 def send_line_messaging_api(channel_access_token, user_id, message_text):
@@ -191,7 +181,7 @@ def send_line_messaging_api(channel_access_token, user_id, message_text):
 # --- 4. 精確地理關鍵字過濾定位系統 ---
 def _detect_country(t_lower, z_lower):
     target = None
-    
+
     if "nvidia" in t_lower or "輝達" in z_lower or "nasa" in t_lower or "apple" in t_lower or "google" in t_lower or "openai" in t_lower or "microsoft" in t_lower or re.search(r'\bfed\b', t_lower) or "聯準會" in z_lower or "wall street" in t_lower or "華爾街" in z_lower:
         target = "美國"
     elif "tsmc" in t_lower or "台積電" in z_lower or "聯發科" in z_lower or "foxconn" in t_lower or "鴻海" in z_lower:
@@ -204,7 +194,7 @@ def _detect_country(t_lower, z_lower):
         target = "日本"
     elif "華為" in z_lower or "huawei" in t_lower or "byd" in t_lower or "比亞迪" in z_lower or "tencent" in t_lower or "騰訊" in z_lower or "alibaba" in t_lower or "阿里巴巴" in z_lower:
         target = "中國"
-        
+
     elif "new york" in t_lower or "紐約" in z_lower: target = "紐約"
     elif "los angeles" in t_lower or "洛杉磯" in z_lower: target = "洛杉磯"
     elif "san francisco" in t_lower or "舊金山" in z_lower: target = "舊金山"
@@ -304,11 +294,7 @@ def _fetch_source_raw(src):
             title_raw = getattr(entry, 'title', '').strip()
             link_raw = getattr(entry, 'link', '').strip()
             if not title_raw or not link_raw: continue
-            
-            t_lower = title_raw.lower()
-            if "error 500" in t_lower or "server error" in t_lower or "internal server error" in t_lower: 
-                continue
-                
+            if "error 500" in title_raw.lower() or "server error" in title_raw.lower(): continue
             results.append((title_raw, link_raw, src["name"]))
     except Exception:
         pass
@@ -325,26 +311,10 @@ def _translate_batch(titles_en, translator, batch_size=8):
             for j, orig in enumerate(group):
                 translations[orig] = parts[j] if j < len(parts) else orig
         except Exception:
-            for orig in group: 
-                try:
-                    translations[orig] = translator.translate(orig)
-                except Exception:
-                    translations[orig] = orig
+            for orig in group: translations[orig] = orig
     return translations
 
 def fetch_all_news():
-    try:
-        with get_db_connection() as conn:
-            conn.execute("""
-                DELETE FROM monitor_logs 
-                WHERE LOWER(title_zh) LIKE '%error 500%' 
-                   OR LOWER(title_zh) LIKE '%server error%'
-                   OR LOWER(title_en) LIKE '%error 500%'
-                   OR LOWER(title_en) LIKE '%server error%'
-            """)
-            conn.commit()
-    except Exception:
-        pass
     all_raw = []
     with ThreadPoolExecutor(max_workers=len(NEWS_SOURCES)) as executor:
         futures = [executor.submit(_fetch_source_raw, src) for src in NEWS_SOURCES]
@@ -357,7 +327,7 @@ def fetch_all_news():
         existing_links = set(row[0] for row in conn.execute("SELECT link FROM monitor_logs").fetchall())
 
     new_entries = [(t, l, s) for t, l, s in all_raw if l not in existing_links]
-    
+
     if new_entries:
         translator = GoogleTranslator(source='auto', target='zh-TW')
         to_translate = []
@@ -591,28 +561,7 @@ current = st.session_state['current_view']
 
 # A. 首頁總覽
 if current == "🏠 首頁總覽":
-    try:
-        with get_db_connection() as conn:
-            conn.execute("""
-                DELETE FROM monitor_logs 
-                WHERE LOWER(title_zh) LIKE '%error 500%' 
-                   OR LOWER(title_zh) LIKE '%server error%'
-                   OR LOWER(title_en) LIKE '%error 500%'
-                   OR LOWER(title_en) LIKE '%server error%'
-            """)
-            conn.commit()
-    except Exception:
-        pass
-
     st.title("🗺️ 全球即時新聞事件地圖 (最近 1 小時)")
-    
-    if st.button("🔄 發現時間停滯？強制抓取此時此刻最新新聞", type="primary"):
-        with st.spinner("正在擊活連線，破除舊時間快取..."):
-            fetch_all_news()
-            st.cache_data.clear()
-        st.success("成功重新加載！")
-        st.rerun()
-
     df_recent = query_recent_hour_data()
 
     if df_recent.empty:
@@ -620,7 +569,7 @@ if current == "🏠 首頁總覽":
     else:
         df_map_ready = df_recent.dropna(subset=['country', 'lat', 'lon'])
         df_map_ready = df_map_ready[df_map_ready['country'] != 'None']
-        
+
         m = folium.Map(location=[25.0, 15.0], zoom_start=2, tiles="OpenStreetMap")
 
         for _, row in df_map_ready.iterrows():
@@ -636,3 +585,121 @@ if current == "🏠 首頁總覽":
                 <a href='{row['link']}' target='_blank' style='display:inline-block; padding:5px 10px; background-color:#ff4b4b; color:white; text-decoration:none; border-radius:4px;'>前往原文</a>
             </div>
             """
+            folium.CircleMarker(
+                location=[row['lat'], row['lon']],
+                radius=8,
+                popup=folium.Popup(popup_html, max_width=300),
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.7
+            ).add_to(m)
+
+        st_folium(m, width="100%", height=600, key="main_live_map_folium_v12")
+        st.write("---")
+        st.write("### 🔔 焦點對應：最近 1 小時內發布的新聞條目")
+        render_native_news_cards(df_recent)
+
+# B. 影片專區
+elif current == "🎬 影片專區":
+    st.title("🎬 24小時即時新聞影音專區")
+    v_col1, v_col2 = st.columns(2)
+    with v_col1: st.video("https://www.youtube.com/watch?v=wM0g8EoGcA0") 
+    with v_col2: st.video("https://www.youtube.com/watch?v=9Auq9mYxFEE")
+
+    st.title("🎬 新聞網站動態影音專區")
+    
+    # 從資料庫中撈取最新的 6 則新聞連結（包含新聞網址）
+    df_all = query_all_data()
+    
+    if df_all.empty:
+        st.info("💡 目前暫無新聞影片資料。")
+    else:
+        # 篩選出可能含有影片的新聞來源（例如 UDN 聯合新聞網，或根據您的爬蟲邏輯篩選）
+        # 這裡示範直接取最新前 4 則新聞來呈現
+        video_news = df_all.head(4)
+        
+        # 使用 Streamlit 每行 2 個欄位的網格佈局
+        for idx in range(0, len(video_news), 2):
+            v_col1, v_col2 = st.columns(2)
+            
+            # 第一個欄位
+            if idx < len(video_news):
+                row = video_news.iloc[idx]
+                with v_col1:
+                    with st.container(border=True):
+                        st.markdown(f"##### 📰 {row['title_zh']}")
+                        st.caption(f"📡 來源: {row['source']} | ⏱️ {row['time']}")
+                        # 呼叫 Streamlit 播放器播放爬蟲抓到的網址
+                        # Streamlit 的 st.video 支援直接輸入多數新聞網站的 MP4 直連或 HLS(.m3u8) 串流
+                        try:
+                            st.video(row['link'])
+                        except Exception:
+                            st.warning("⚠️ 該新聞影片格式需前往原網站觀看")
+                            st.link_button("🔗 前往觀看影片", row['link'], use_container_width=True)
+
+            # 第二個欄位
+            if idx + 1 < len(video_news):
+                row = video_news.iloc[idx + 1]
+                with v_col2:
+                    with st.container(border=True):
+                        st.markdown(f"##### 📰 {row['title_zh']}")
+                        st.caption(f"📡 來源: {row['source']} | ⏱️ {row['time']}")
+                        try:
+                            st.video(row['link'])
+                        except Exception:
+                            st.warning("⚠️ 該新聞影片格式需前往原網站觀看")
+                            st.link_button("🔗 前往觀看影片", row['link'], use_container_width=True)
+                            
+# C. 歷史總時間軸
+elif current == "⏳ 歷史總時間軸":
+    st.title("⏳ 全球歷史即時總時間軸")
+    render_native_news_cards(query_all_data())
+
+# D. 數據統計分析
+elif current == "📊 數據統計分析":
+    st.title("📊 全球新聞數據統計分析")
+    df_all = query_all_data()
+    if df_all.empty: st.warning("資料庫內暫無數據可供分析。")
+    else:
+        col_f1, col_f2 = st.columns([1, 1])
+        with col_f1:
+            category_counts = df_all['category'].value_counts().reset_index()
+            category_counts.columns = ['category', 'count']
+            st.plotly_chart(px.pie(category_counts, names='category', values='count', title="各類別發布比例", hole=0.4), use_container_width=True, key="stat_pie_chart")
+        with col_f2:
+            df_trend = df_all.copy()
+            df_trend['time_group'] = df_trend['time_dt'].dt.floor('10min').dt.strftime("%Y-%m-%d %H:%M")
+            time_trend = df_trend.groupby(['time_group', 'category']).size().reset_index(name='新聞數量')
+            st.plotly_chart(px.line(time_trend.sort_values(by='time_group'), x="time_group", y="新聞數量", color="category", title="趨勢走勢線", markers=True), use_container_width=True, key="stat_line_chart")
+
+# E. 關鍵字搜尋
+elif current == "🔍 關鍵字搜尋":
+    st.title("🔍 全域新聞關鍵字檢索")
+    search_query = st.text_input("輸入要查詢的關鍵字：", placeholder="例如：台積電、晶片", key="search_box_input")
+    df_all = query_all_data()
+    if search_query and not df_all.empty:
+        render_native_news_cards(df_all[df_all['title_zh'].str.contains(search_query, na=False, case=False)])
+
+# F. LINE 通知設定頁面
+elif current == "📢 LINE通知設定":
+    st.title("📢 LINE 官方帳號智慧預警推送")
+    with get_db_connection() as conn: curr_config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
+    display_token, display_userid = "", ""
+    if curr_config and curr_config[0] and "|||" in curr_config[0]: display_token, display_userid = curr_config[0].split("|||")
+    with st.form("push_form_cfg"):
+        token_input = st.text_input("1. Channel Access Token", value=display_token, type="password", key="line_tok_input")
+        userid_input = st.text_input("2. Your User ID", value=display_userid, key="line_uid_input")
+        kw_input = st.text_area("3. 追蹤關鍵字", value=curr_config[1] if curr_config else "", key="line_kw_input")
+        if st.form_submit_button("儲存並開啟智慧推播"):
+            if token_input.strip() and userid_input.strip():
+                with get_db_connection() as conn:
+                    conn.execute("INSERT OR REPLACE INTO push_settings (id, line_token, keywords) VALUES (1, ?, ?)", (f"{token_input.strip()}|||{userid_input.strip()}", kw_input.replace("，", ",")))
+                    conn.commit()
+                st.success("🎉 LINE 通知設定更新成功！")
+
+# G. 動態分類專屬時間軸
+elif current.startswith("🔖 "):
+    target_tag = current.replace("🔖 ", "")
+    st.title(f"🔖 分類專屬獨立時間軸：{target_tag}")
+    render_native_news_cards(query_category_data(target_tag))
