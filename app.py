@@ -322,6 +322,18 @@ def _translate_batch(titles_en, translator, batch_size=8):
                     translations[orig] = orig
     return translations
 def fetch_all_news():
+    try:
+            with get_db_connection() as conn:
+                conn.execute("""
+                    DELETE FROM monitor_logs 
+                    WHERE LOWER(title_zh) LIKE '%error 500%' 
+                       OR LOWER(title_zh) LIKE '%server error%'
+                       OR LOWER(title_en) LIKE '%error 500%'
+                       OR LOWER(title_en) LIKE '%server error%'
+                """)
+                conn.commit()
+        except Exception:
+            pass
     all_raw = []
     with ThreadPoolExecutor(max_workers=len(NEWS_SOURCES)) as executor:
         futures = [executor.submit(_fetch_source_raw, src) for src in NEWS_SOURCES]
