@@ -602,55 +602,27 @@ if current == "🏠 首頁總覽":
 
 # B. 影片專區
 elif current == "🎬 影片專區":
-    st.title("🎬 24小時即時新聞影音專區")
-    v_col1, v_col2 = st.columns(2)
-    with v_col1: st.video("https://www.youtube.com/watch?v=wM0g8EoGcA0") 
-    with v_col2: st.video("https://www.youtube.com/watch?v=9Auq9mYxFEE")
-
-    st.title("🎬 新聞網站動態影音專區")
+    st.title("🎬 即時新聞影音連結專區")
     
-    # 從資料庫中撈取最新的 6 則新聞連結（包含新聞網址）
+    # 從資料庫中讀取最新新聞
     df_all = query_all_data()
     
     if df_all.empty:
-        st.info("💡 目前暫無新聞影片資料。")
+        st.info("💡 目前暫無新聞資料。")
     else:
-        # 篩選出可能含有影片的新聞來源（例如 UDN 聯合新聞網，或根據您的爬蟲邏輯篩選）
-        # 這裡示範直接取最新前 4 則新聞來呈現
-        video_news = df_all.head(4)
+        # 取出最新的 10 則新聞，純呈現連結
+        video_news = df_all.head(10)
         
-        # 使用 Streamlit 每行 2 個欄位的網格佈局
-        for idx in range(0, len(video_news), 2):
-            v_col1, v_col2 = st.columns(2)
-            
-            # 第一個欄位
-            if idx < len(video_news):
-                row = video_news.iloc[idx]
-                with v_col1:
-                    with st.container(border=True):
-                        st.markdown(f"##### 📰 {row['title_zh']}")
-                        st.caption(f"📡 來源: {row['source']} | ⏱️ {row['time']}")
-                        # 呼叫 Streamlit 播放器播放爬蟲抓到的網址
-                        # Streamlit 的 st.video 支援直接輸入多數新聞網站的 MP4 直連或 HLS(.m3u8) 串流
-                        try:
-                            st.video(row['link'])
-                        except Exception:
-                            st.warning("⚠️ 該新聞影片格式需前往原網站觀看")
-                            st.link_button("🔗 前往觀看影片", row['link'], use_container_width=True)
-
-            # 第二個欄位
-            if idx + 1 < len(video_news):
-                row = video_news.iloc[idx + 1]
-                with v_col2:
-                    with st.container(border=True):
-                        st.markdown(f"##### 📰 {row['title_zh']}")
-                        st.caption(f"📡 來源: {row['source']} | ⏱️ {row['time']}")
-                        try:
-                            st.video(row['link'])
-                        except Exception:
-                            st.warning("⚠️ 該新聞影片格式需前往原網站觀看")
-                            st.link_button("🔗 前往觀看影片", row['link'], use_container_width=True)
-                            
+        for idx, row in video_news.iterrows():
+            with st.container(border=True):
+                # 建立左邊文字、右邊按鈕的乾淨排版
+                col_txt, col_lnk = st.columns([8, 2])
+                with col_txt:
+                    st.markdown(f"📌 **{row['title_zh']}**")
+                    st.caption(f"📡 來源: `{row['source']}` | ⏱️ 時間: {row['time']}")
+                with col_lnk:
+                    # 只提供點擊跳轉的連結按鈕，不載入任何影片畫面
+                    st.link_button("🌐 開啟影片連結", row['link'], use_container_width=True, key=f"video_link_{idx}")                    
 # C. 歷史總時間軸
 elif current == "⏳ 歷史總時間軸":
     st.title("⏳ 全球歷史即時總時間軸")
