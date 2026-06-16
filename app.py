@@ -301,7 +301,7 @@ def _fetch_source_raw(src):
                 
             results.append((title_raw, link_raw, src["name"]))
     except Exception:
-        pass  # 👈 檢查這裡！上一個函式的 except 不能漏掉或縮排錯誤
+        pass
     return results
 
 def _translate_batch(titles_en, translator, batch_size=8):
@@ -321,8 +321,8 @@ def _translate_batch(titles_en, translator, batch_size=8):
                 except Exception:
                     translations[orig] = orig
     return translations
+
 def fetch_all_news():
-    # 🎯 縮排修正版：try、except、with 的空格全部對齊了
     try:
         with get_db_connection() as conn:
             conn.execute("""
@@ -581,7 +581,30 @@ current = st.session_state['current_view']
 
 # A. 首頁總覽
 if current == "🏠 首頁總覽":
+    # 🛡️ 【保險機制區塊】當打開首頁時，強制再次執行 Error 500 清理
+    try:
+        with get_db_connection() as conn:
+            conn.execute("""
+                DELETE FROM monitor_logs 
+                WHERE LOWER(title_zh) LIKE '%error 500%' 
+                   OR LOWER(title_zh) LIKE '%server error%'
+                   OR LOWER(title_en) LIKE '%error 500%'
+                   OR LOWER(title_en) LIKE '%server error%'
+            """)
+            conn.commit()
+    except Exception:
+        pass
+
     st.title("🗺️ 全球即時新聞事件地圖 (最近 1 小時)")
+    
+    # 在首頁最頂部多增加一個直覺的強制同步更新按鈕，防止排程器死結
+    if st.button("🔄 發現時間停滯？強制抓取此時此刻最新新聞", type="primary"):
+        with st.spinner("正在擊活連線，破除舊時間快取..."):
+            fetch_all_news()
+            st.cache_data.clear()
+        st.success("成功重新加載！")
+        st.rerun()
+
     df_recent = query_recent_hour_data()
 
     if df_recent.empty:
@@ -628,70 +651,4 @@ elif current == "🎬 影片專區":
     df_all = query_all_data()
     
     if df_all.empty:
-        st.info("💡 目前暫無新聞資料。")
-    else:
-        # 取出最新的 10 則新聞，純呈現連結
-        video_news = df_all.head(10)
-        
-        for idx, row in video_news.iterrows():
-            with st.container(border=True):
-                # 建立左邊文字、右邊按鈕的乾淨排版
-                col_txt, col_lnk = st.columns([8, 2])
-                with col_txt:
-                    st.markdown(f"📌 **{row['title_zh']}**")
-                    st.caption(f"📡 來源: `{row['source']}` | ⏱️ 時間: {row['time']}")
-                with col_lnk:
-                    # 只提供點擊跳轉的連結按鈕，不載入任何影片畫面
-                    st.link_button("🌐 開啟影片連結", row['link'], use_container_width=True, key=f"video_link_{idx}")                           
-# C. 歷史總時間軸
-elif current == "⏳ 歷史總時間軸":
-    st.title("⏳ 全球歷史即時總時間軸")
-    render_native_news_cards(query_all_data())
-
-# D. 數據統計分析
-elif current == "📊 數據統計分析":
-    st.title("📊 全球新聞數據統計分析")
-    df_all = query_all_data()
-    if df_all.empty: st.warning("資料庫內暫無數據可供分析。")
-    else:
-        col_f1, col_f2 = st.columns([1, 1])
-        with col_f1:
-            category_counts = df_all['category'].value_counts().reset_index()
-            category_counts.columns = ['category', 'count']
-            st.plotly_chart(px.pie(category_counts, names='category', values='count', title="各類別發布比例", hole=0.4), use_container_width=True, key="stat_pie_chart")
-        with col_f2:
-            df_trend = df_all.copy()
-            df_trend['time_group'] = df_trend['time_dt'].dt.floor('10min').dt.strftime("%Y-%m-%d %H:%M")
-            time_trend = df_trend.groupby(['time_group', 'category']).size().reset_index(name='新聞數量')
-            st.plotly_chart(px.line(time_trend.sort_values(by='time_group'), x="time_group", y="新聞數量", color="category", title="趨勢走勢線", markers=True), use_container_width=True, key="stat_line_chart")
-
-# E. 關鍵字搜尋
-elif current == "🔍 關鍵字搜尋":
-    st.title("🔍 全域新聞關鍵字檢索")
-    search_query = st.text_input("輸入要查詢的關鍵字：", placeholder="例如：台積電、晶片", key="search_box_input")
-    df_all = query_all_data()
-    if search_query and not df_all.empty:
-        render_native_news_cards(df_all[df_all['title_zh'].str.contains(search_query, na=False, case=False)])
-
-# F. LINE 通知設定頁面
-elif current == "📢 LINE通知設定":
-    st.title("📢 LINE 官方帳號智慧預警推送")
-    with get_db_connection() as conn: curr_config = conn.execute("SELECT line_token, keywords FROM push_settings WHERE id=1").fetchone()
-    display_token, display_userid = "", ""
-    if curr_config and curr_config[0] and "|||" in curr_config[0]: display_token, display_userid = curr_config[0].split("|||")
-    with st.form("push_form_cfg"):
-        token_input = st.text_input("1. Channel Access Token", value=display_token, type="password", key="line_tok_input")
-        userid_input = st.text_input("2. Your User ID", value=display_userid, key="line_uid_input")
-        kw_input = st.text_area("3. 追蹤關鍵字", value=curr_config[1] if curr_config else "", key="line_kw_input")
-        if st.form_submit_button("儲存並開啟智慧推播"):
-            if token_input.strip() and userid_input.strip():
-                with get_db_connection() as conn:
-                    conn.execute("INSERT OR REPLACE INTO push_settings (id, line_token, keywords) VALUES (1, ?, ?)", (f"{token_input.strip()}|||{userid_input.strip()}", kw_input.replace("，", ",")))
-                    conn.commit()
-                st.success("🎉 LINE 通知設定更新成功！")
-
-# G. 動態分類專屬時間軸
-elif current.startswith("🔖 "):
-    target_tag = current.replace("🔖 ", "")
-    st.title(f"🔖 分類專屬獨立時間軸：{target_tag}")
-    render_native_news_cards(query_category_data(target_tag))
+        st.info("💡 目前暫無影音專區內容。")
